@@ -145,6 +145,9 @@
 - Provider adapters for GPT, Claude, and Gemini
 - Response normalization service
 - Observability hooks
+- **API gateway**: Handles the `/agent/task` route. [cite: User's SDD]
+- **Gemini Adapter**: New provider integration layer for Google Gemini API. [cite: User's SDD]
+- **Middleware**: JSON body parser and security validation layer. [cite: User's SDD]
 
 ### 7.3 Security Layer
 #### 7.3.1 Objectives
@@ -246,6 +249,9 @@
 - Execute approved automation commands and scripts safely.
 - Provide deterministic, auditable execution behavior for Copilot-driven automation tasks.
 - Prevent arbitrary command execution through policy-first controls.
+- Receives validated task strings from the Backend Proxy. [cite: User's SDD]
+- Dispatches tasks to the **Multi-model Router** to generate executable logic via AI Prompts. [cite: User's SDD]
+- Translates AI responses into system actions (e.g., code analysis, script generation). [cite: User's SDD]
 
 #### 7.5.2 Responsibilities
 - Accept execution intents from trusted backend orchestration paths.
@@ -268,6 +274,8 @@
 - Runtime quotas for CPU, memory, process count, and duration
 - Restricted filesystem and outbound network access
 - Full execution audit trail with correlation IDs
+- Implements whitelist filtering for all command strings before execution. [cite: User's SDD]
+
 
 #### 7.5.5 Execution Flow
 1. Backend submits a command or script execution intent.
@@ -311,6 +319,10 @@
 - `POST /agent` (GitHub Copilot Extension agent endpoint; GitHub webhook payload schema and signature verification compliant)
 - `GET /providers/status`
 - `GET /security/policies` (optional admin/internal)
+Standardized endpoint for communication between GitHub Copilot platform and the local proxy. [cite: User's SDD]
+- **URL**: `http://localhost:3000/agent/task` [cite: User's SDD]
+- **Authentication**: (Planned) GitHub Webhook HMAC Signature verification. [cite: User's SDD]
+- **Protocol**: HTTPS / JSON. [cite: User's SDD]
 
 ### 9.2 Internal Service Interfaces
 - Security layer evaluation interface
