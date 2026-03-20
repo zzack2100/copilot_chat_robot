@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: 'Rajdhani', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background:
+    radial-gradient(circle at 12% 16%, rgba(245, 158, 11, 0.16), transparent 26%),
+    radial-gradient(circle at 78% 14%, rgba(239, 68, 68, 0.14), transparent 30%),
+    linear-gradient(150deg, #0f1114 0%, #171b20 52%, #111418 100%);
+  color: #d8dee9;
+}
+
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+.panel-frame {
+  border: 1px solid #3c444d;
+  background: linear-gradient(165deg, rgba(43, 49, 56, 0.9), rgba(28, 31, 35, 0.92));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.risk-critical {
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.12);
+}
+
+.risk-high {
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fdba74;
+  background-color: rgba(245, 158, 11, 0.12);
+}

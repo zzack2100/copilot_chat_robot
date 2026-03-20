@@ -3,7 +3,10 @@ import dotenv from 'dotenv';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
+
+const SMOKE_DELAY_MS = Number(process.env.SMOKE_DELAY_MS ?? '1200');
+const SMOKE_USE_STUB = process.env.SMOKE_USE_STUB === '1';
 
 const buildStringEnv = (): Record<string, string> => {
     const env: Record<string, string> = {};
@@ -14,7 +17,17 @@ const buildStringEnv = (): Record<string, string> => {
         }
     }
 
+    if (SMOKE_USE_STUB) {
+        env.MCP_REVIEW_MODE = 'stub';
+    }
+
     return env;
+};
+
+const sleep = async (delayMs: number): Promise<void> => {
+    await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+    });
 };
 
 const isTextContent = (value: unknown): value is { type: 'text'; text: string } => {
@@ -55,6 +68,10 @@ const main = async (): Promise<void> => {
             throw new Error(`Tool review_code not found. Available tools: ${toolNames.join(', ')}`);
         }
 
+        if (SMOKE_DELAY_MS > 0) {
+            await sleep(SMOKE_DELAY_MS);
+        }
+
         const callResult = await client.callTool({
             name: 'review_code',
             arguments: {
@@ -78,6 +95,8 @@ const main = async (): Promise<void> => {
         }
 
         console.log('MCP smoke test passed.');
+        console.log(`Mode: ${SMOKE_USE_STUB ? 'stub' : 'live'}`);
+        console.log(`Delay: ${SMOKE_DELAY_MS}ms`);
         console.log(`Tools: ${toolNames.join(', ')}`);
         console.log(`review_code output preview: ${textContent.text.slice(0, 300)}`);
     } finally {

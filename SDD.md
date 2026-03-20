@@ -12,12 +12,12 @@
 ### 2.1 Purpose
 - Define the software design for a formal GitHub Copilot Extension with multi-platform support.
 - Describe the architecture, major components, interfaces, and key design decisions.
-- Provide implementation guidance for frontend, backend proxy, GitHub agent handling, action execution, security filtering, and multi-model routing.
+- Provide implementation guidance for frontend, backend proxy, MCP tool handling, action execution, security filtering, and multi-model routing.
 
 ### 2.2 Scope
 - Mobile and desktop Copilot companion experience delivered through a shared React Native frontend.
 - Backend proxy implemented with Node.js and TypeScript.
-- GitHub Copilot Extension integration through GitHub agent webhook protocol handling.
+- Model Context Protocol (MCP) integration through JSON-RPC over stdio transport.
 - AI model integrations for GPT, Claude, and Gemini.
 - Security layer for prompt injection detection and filtering.
 - Multi-model router for provider selection, failover, and policy-based dispatch.
@@ -35,12 +35,12 @@
 ### 3.1 Product Summary
 - A GitHub Copilot Extension platform with companion multi-platform interfaces for mobile and PC environments.
 - A shared application layer that connects users to multiple AI providers through a secure backend proxy.
-- A routing, agent-handling, and security architecture designed to protect system prompts, enforce usage policies, and optimize model selection.
+- A routing, MCP tool-handling, and security architecture designed to protect system prompts, enforce usage policies, and optimize model selection.
 
 ### 3.2 Business Goals
 - Deliver a consistent chatbot experience across platforms.
 - Centralize model access behind a backend proxy.
-- Conform to GitHub Copilot Extension integration patterns and webhook protocol expectations.
+- Conform to MCP integration patterns and JSON-RPC over stdio protocol expectations.
 - Reduce prompt injection risk through defense-in-depth controls.
 - Support multiple AI providers without changing client behavior.
 - Enable future expansion for automation workflows and enterprise policy controls.
@@ -80,8 +80,8 @@
 ## 6. High-Level Architecture
 ### 6.1 Context Diagram
 - **Clients**: Mobile and PC companion applications built with React Native
-- **GitHub Copilot Host**: GitHub Copilot Extension caller emitting agent webhook requests
-- **Backend Proxy**: Node.js/TypeScript service exposing internal chat APIs
+- **MCP Client**: Host that invokes MCP tool calls over stdio
+- **MCP Server (Backend Proxy)**: Node.js/TypeScript service exposing MCP tools and provider orchestration
 - **Security Layer**: Prompt injection filter, content validation, and policy enforcement
 - **Multi-model Router**: Provider selection engine for GPT, Claude, and Gemini
 - **Action Engine**: Controlled command and script execution service
@@ -98,7 +98,7 @@
 
 ### 6.3 Deployment View
 - Client applications on mobile devices and desktop environments
-- Stateless backend proxy deployed behind HTTPS load balancing
+- MCP server process deployed locally or behind a secured tunnel, communicating via stdio transport
 - External provider integrations over secure outbound connections
 - Shared storage for logs, audit events, and optional chat metadata
 
@@ -135,7 +135,9 @@
 
 #### 7.2.2 Major Modules
 - API gateway/controller layer
-- GitHub Agent Handler module for GitHub webhook protocol events
+- MCP stdio transport layer
+- MCP tool registry
+- Tool execution handler for `review_code`
 - Request validation middleware
 - Session and conversation service
 - Security filtering service
@@ -145,9 +147,9 @@
 - Provider adapters for GPT, Claude, and Gemini
 - Response normalization service
 - Observability hooks
-- **API gateway**: Handles the `/agent/task` route. [cite: User's SDD]
-- **Gemini Adapter**: New provider integration layer for Google Gemini API. [cite: User's SDD]
-- **Middleware**: JSON body parser and security validation layer. [cite: User's SDD]
+- **MCP tool interface**: Exposes `review_code` with strict input schema validation.
+- **Gemini adapter**: Integrates Google Gemini for embedded software code review.
+- **Runtime robustness**: Enforces timeout, bounded retry, and normalized error payloads.
 
 ### 7.3 Security Layer
 #### 7.3.1 Objectives
@@ -316,13 +318,14 @@
 - `POST /chat/send`
 - `GET /chat/session/:id`
 - `POST /chat/stream`
-- `POST /agent` (GitHub Copilot Extension agent endpoint; GitHub webhook payload schema and signature verification compliant)
+- `MCP Tool Call: review_code` (primary control-plane interface)
 - `GET /providers/status`
 - `GET /security/policies` (optional admin/internal)
-Standardized endpoint for communication between GitHub Copilot platform and the local proxy. [cite: User's SDD]
-- **URL**: `http://localhost:3000/agent/task` [cite: User's SDD]
-- **Authentication**: (Planned) GitHub Webhook HMAC Signature verification. [cite: User's SDD]
-- **Protocol**: HTTPS / JSON. [cite: User's SDD]
+- **Primary protocol**: JSON-RPC over stdio (MCP)
+- **Primary operation**: `review_code`
+- **Input schema**: object with required `code: string`, `additionalProperties: false`
+- **Output contract**: JSON payload with `status`, `tool`, and `message`
+- **Legacy note**: webhook-style `/agent/task` flow is deprecated and is not part of the primary request path.
 
 ### 9.2 Internal Service Interfaces
 - Security layer evaluation interface
@@ -339,12 +342,12 @@ Standardized endpoint for communication between GitHub Copilot platform and the 
 ## 10. Behavioral Design
 ### 10.1 Primary Request Flow
 1. User sends message from the frontend.
-2. Backend proxy authenticates and validates the request.
+2. MCP client issues a JSON-RPC tool call over stdio to the MCP server.
 3. Security layer analyzes prompt, context, and policy constraints.
 4. Router selects the provider and model.
 5. Provider adapter invokes the selected AI API.
 6. Response is normalized and checked for policy violations.
-7. Result is returned to the client and telemetry is recorded.
+7. Tool result is returned to the MCP client and telemetry is recorded.
 
 ### 10.2 Prompt Injection Handling Flow
 1. Request enters the security layer.
@@ -407,9 +410,17 @@ Standardized endpoint for communication between GitHub Copilot platform and the 
 ### 13.2 Failure Modes
 - Provider timeout
 - Invalid provider response shape
+- Provider quota exhaustion (HTTP 429)
+- Provider transient API errors
 - Security filter false positive
 - Authentication failure
 - Rate limit exhaustion
+
+### 13.3 Runtime Robustness Policy
+- MCP tool inputs must pass strict schema and size validation before model dispatch.
+- Gemini calls must run under bounded timeout controls.
+- Gemini calls must use bounded retry with deterministic attempt limits.
+- All failures must return normalized error payloads with stable fields for diagnostics.
 
 ## 14. Observability and Operations
 ### 14.1 Logging
@@ -417,6 +428,9 @@ Standardized endpoint for communication between GitHub Copilot platform and the 
 - Security events
 - Routing decisions
 - Provider errors and retries
+- MCP stdio protocol data is reserved for stdout transport frames only
+- Diagnostic and operational logs must be emitted to stderr (for example, `console.error`)
+- Error messages must remain structured and auditable for post-incident analysis
 
 ### 14.2 Metrics
 - Request volume by provider
@@ -451,10 +465,12 @@ Standardized endpoint for communication between GitHub Copilot platform and the 
 - Abuse and rate limit testing
 
 ### 15.4 End-to-End Testing
-- User chat flow across platforms
-- Blocked request behavior
-- Provider fallback behavior
-- Streaming response validation
+- Standard smoke path: run `npm run smoke:mcp`
+- Validate MCP server startup over stdio transport
+- Validate `listTools` includes `review_code`
+- Validate `callTool(review_code)` returns non-empty text payload
+- Validate failure handling for timeout, provider quota, and provider API errors
+- Record explicit pass/fail criteria and error signatures in test logs
 
 ## 16. Risks and Mitigations
 - **Risk**: False positives in prompt injection detection
