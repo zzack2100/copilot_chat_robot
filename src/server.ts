@@ -20,6 +20,7 @@ if (result.error) {
 
 type ReviewMode = 'live' | 'stub';
 type TransportMode = 'stdio' | 'sse';
+type PromptMode = 'review_code' | 'chat_expert';
 
 const REVIEW_MODE: ReviewMode = process.env.MCP_REVIEW_MODE === 'stub' ? 'stub' : 'live';
 const TRANSPORT_MODE: TransportMode = process.env.MCP_TRANSPORT === 'sse' ? 'sse' : 'stdio';
@@ -63,6 +64,17 @@ Required output schema (strictly follow this):
 
 severity must be one of: Critical, High, Normal.
 Do not include any fields not listed above.
+`;
+
+const CHAT_SYSTEM_INSTRUCTION = `
+You are a senior embedded software expert speaking to engineers in a professional, concise, helpful tone.
+
+Behavior rules:
+- If the user greets you or asks who you are, introduce yourself briefly.
+- If the user asks a general embedded/software question, answer directly in plain text.
+- If the user appears to want a code review but did not paste code, ask them to paste the relevant C/C++ code.
+- Do not pretend a code review was performed unless actual code was provided.
+- For general chat responses, return plain text only.
 `;
 
 const REVIEW_TIMEOUT_MS = 90_000;
@@ -142,7 +154,84 @@ const extractJsonFromText = (text: string): string => {
     return text;
 };
 
-const runGeminiReview = async (code: string): Promise<string> => {
+const looksLikeCode = (input: string): boolean => {
+    const normalized = input.trim();
+    if (normalized.length === 0) {
+        return false;
+    }
+
+    const codeSignals = [
+        '#include',
+        'int main(',
+        'void ',
+        'volatile ',
+        'static ',
+        'uint8_t',
+        'uint16_t',
+        'uint32_t',
+        'bool ',
+        'for (',
+        'while (',
+        'if (',
+        'switch (',
+        'return ',
+        'ISR(',
+        '::',
+        '->',
+    ];
+
+    const keywordHits = codeSignals.filter((signal) => normalized.includes(signal)).length;
+    const hasBraces = normalized.includes('{') && normalized.includes('}');
+    const hasSemicolons = (normalized.match(/;/g) ?? []).length >= 2;
+    const lineCount = normalized.split(/\r?\n/).length;
+
+    return keywordHits >= 1 || hasBraces || hasSemicolons || lineCount >= 4;
+};
+
+const toSafeDirectPromptPayload = (payload: unknown): { content: string; mode?: PromptMode } => {
+    if (!payload || typeof payload !== 'object') {
+        throw new Error('Invalid arguments: expected an object payload.');
+    }
+
+    const args = payload as { code?: unknown; message?: unknown; mode?: unknown };
+    const rawContent = typeof args.code === 'string'
+        ? args.code
+        : typeof args.message === 'string'
+            ? args.message
+            : null;
+
+    if (rawContent === null) {
+        throw new Error('Invalid arguments: expected a code or message string.');
+    }
+
+    const content = rawContent.trim();
+    if (content.length === 0) {
+        throw new Error('Invalid arguments: content cannot be empty.');
+    }
+
+    if (content.length > 100_000) {
+        throw new Error('Invalid arguments: content is too large (max 100000 chars).');
+    }
+
+    const mode = args.mode === 'review_code' || args.mode === 'chat_expert'
+        ? args.mode
+        : undefined;
+
+    return {
+        content,
+        ...(mode ? { mode } : {}),
+    };
+};
+
+const resolvePromptMode = (content: string, explicitMode?: PromptMode): PromptMode => {
+    if (explicitMode) {
+        return explicitMode;
+    }
+
+    return looksLikeCode(content) ? 'review_code' : 'chat_expert';
+};
+
+const runGeminiText = async (prompt: string, systemInstruction: string, logPrefix: string): Promise<string> => {
     if (!genAI) {
         throw new Error('Gemini client is not initialized. Check MCP_REVIEW_MODE and GEMINI_API_KEY.');
     }
@@ -151,21 +240,19 @@ const runGeminiReview = async (code: string): Promise<string> => {
         throw new Error('No Gemini model candidates configured.');
     }
 
-    const prompt = `Review the following C/C++ embedded code. Return ONLY a raw JSON object with no markdown — see schema in system instruction.\n\nCode:\n${code}`;
-
     let lastError: unknown;
 
     for (const modelName of GEMINI_MODELS) {
         const activeModel = genAI.getGenerativeModel({
             model: modelName,
-            systemInstruction: SYSTEM_INSTRUCTION,
+            systemInstruction,
         });
 
         for (let attempt = 1; attempt <= REVIEW_MAX_ATTEMPTS; attempt += 1) {
             try {
                 const result = await withTimeout(activeModel.generateContent(prompt), REVIEW_TIMEOUT_MS);
                 const response = await result.response;
-                const text = extractJsonFromText(response.text().trim());
+                const text = response.text().trim();
 
                 if (!text) {
                     throw new Error('Gemini returned an empty response.');
@@ -176,24 +263,35 @@ const runGeminiReview = async (code: string): Promise<string> => {
                 lastError = error;
 
                 if (isModelNotFoundError(error)) {
-                    console.error(`[review_code] model ${modelName} not available, trying next candidate...`);
+                    console.error(`[${logPrefix}] model ${modelName} not available, trying next candidate...`);
                     break;
                 }
 
                 if (isQuotaOrRateLimitError(error)) {
-                    console.error(`[review_code] model ${modelName} quota/rate limit hit, switching to next candidate...`);
+                    console.error(`[${logPrefix}] model ${modelName} quota/rate limit hit, switching to next candidate...`);
                     break;
                 }
 
                 if (attempt < REVIEW_MAX_ATTEMPTS) {
-                    console.error(`[review_code] model ${modelName} attempt ${attempt} failed, retrying in ${RETRY_BASE_DELAY_MS}ms...`);
+                    console.error(`[${logPrefix}] model ${modelName} attempt ${attempt} failed, retrying in ${RETRY_BASE_DELAY_MS}ms...`);
                     await sleep(RETRY_BASE_DELAY_MS);
                 }
             }
         }
     }
 
-    throw lastError instanceof Error ? lastError : new Error('Gemini review failed.');
+    throw lastError instanceof Error ? lastError : new Error(`${logPrefix} failed.`);
+};
+
+const runGeminiReview = async (code: string): Promise<string> => {
+    const prompt = `Review the following C/C++ embedded code. Return ONLY a raw JSON object with no markdown — see schema in system instruction.\n\nCode:\n${code}`;
+    const text = await runGeminiText(prompt, SYSTEM_INSTRUCTION, 'review_code');
+    return extractJsonFromText(text);
+};
+
+const runGeminiChat = async (message: string): Promise<string> => {
+    const prompt = `User message:\n${message}`;
+    return await runGeminiText(prompt, CHAT_SYSTEM_INSTRUCTION, 'chat_expert');
 };
 
 const runStubReview = (_code: string): string => {
@@ -214,6 +312,40 @@ const runStubReview = (_code: string): string => {
         null,
         2
     );
+};
+
+const runStubChat = (message: string): string => {
+    const normalized = message.toLowerCase();
+
+    if (normalized.includes('你好') || normalized.includes('hello') || normalized.includes('hi')) {
+        return '您好，我是資深嵌入式軟體專家。您可以直接貼上 C/C++ 程式碼，我會幫您做 thread-safety 與嵌入式風險分析。';
+    }
+
+    if (normalized.includes('你是誰') || normalized.includes('who are you')) {
+        return '我是專注於 MCU、ISR、thread-safety 與 MISRA-C 的資深嵌入式審查助手，可以回答一般技術問題，也可以直接審閱您的程式碼。';
+    }
+
+    if (normalized.includes('review') || normalized.includes('code') || normalized.includes('thread') || normalized.includes('safety')) {
+        return '如果您要我做正式審閱，請直接貼上完整或關鍵的 C/C++ 程式碼片段。我也可以先回答一般嵌入式設計問題。';
+    }
+
+    return '我可以處理兩種任務：一般嵌入式技術對話，以及 C/C++ 程式碼審閱。您可以直接提問，或貼上程式碼開始分析。';
+};
+
+const runPrompt = async (content: string, explicitMode?: PromptMode): Promise<{ tool: PromptMode; message: string }> => {
+    const tool = resolvePromptMode(content, explicitMode);
+
+    if (tool === 'review_code') {
+        const message = REVIEW_MODE === 'stub'
+            ? runStubReview(content)
+            : await runGeminiReview(content);
+        return { tool, message };
+    }
+
+    const message = REVIEW_MODE === 'stub'
+        ? runStubChat(content)
+        : await runGeminiChat(content);
+    return { tool, message };
 };
 
 const createProtocolServer = (): Server => {
@@ -247,6 +379,21 @@ const createProtocolServer = (): Server => {
                         additionalProperties: false,
                     },
                 },
+                {
+                    name: 'chat_expert',
+                    description: 'Answer general embedded software questions in plain text.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            message: {
+                                type: 'string',
+                                description: 'The user message or general question.',
+                            },
+                        },
+                        required: ['message'],
+                        additionalProperties: false,
+                    },
+                },
             ],
         };
     });
@@ -254,7 +401,7 @@ const createProtocolServer = (): Server => {
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const toolName = request.params.name;
 
-        if (toolName !== 'review_code') {
+        if (toolName !== 'review_code' && toolName !== 'chat_expert') {
             return {
                 isError: true,
                 content: [
@@ -275,10 +422,11 @@ const createProtocolServer = (): Server => {
         }
 
         try {
-            const { code } = toSafeReviewPayload(request.params.arguments);
-            const review = REVIEW_MODE === 'stub'
-                ? runStubReview(code)
-                : await runGeminiReview(code);
+            const tool = toolName as PromptMode;
+            const payload = tool === 'review_code'
+                ? { content: toSafeReviewPayload(request.params.arguments).code, mode: tool }
+                : { content: toSafeDirectPromptPayload(request.params.arguments).content, mode: tool };
+            const responsePayload = await runPrompt(payload.content, payload.mode);
 
             return {
                 content: [
@@ -287,8 +435,8 @@ const createProtocolServer = (): Server => {
                         text: JSON.stringify(
                             {
                                 status: 'success',
-                                tool: 'review_code',
-                                message: review,
+                                tool: responsePayload.tool,
+                                message: responsePayload.message,
                             },
                             null,
                             2
@@ -298,7 +446,7 @@ const createProtocolServer = (): Server => {
             };
         } catch (error) {
             const message = normalizeErrorMessage(error);
-            console.error('[review_code] failed:', message);
+            console.error(`[${toolName}] failed:`, message);
             return {
                 isError: true,
                 content: [
@@ -307,7 +455,7 @@ const createProtocolServer = (): Server => {
                         text: JSON.stringify(
                             {
                                 status: 'error',
-                                tool: 'review_code',
+                                tool: toolName,
                                 message,
                             },
                             null,
@@ -345,14 +493,12 @@ const runSseServer = async (): Promise<void> => {
     app.post('/api/review', async (req: Request, res: Response) => {
         try {
             const { code } = toSafeReviewPayload(req.body as unknown);
-            const review = REVIEW_MODE === 'stub'
-                ? runStubReview(code)
-                : await runGeminiReview(code);
+            const review = await runPrompt(code, 'review_code');
 
             res.status(200).json({
                 status: 'success',
-                tool: 'review_code',
-                message: review,
+                tool: review.tool,
+                message: review.message,
             });
         } catch (error) {
             const message = normalizeErrorMessage(error);
@@ -401,22 +547,20 @@ const runSseServer = async (): Promise<void> => {
 
         if (!sessionId) {
             try {
-                const { code } = toSafeReviewPayload(req.body as unknown);
-                const review = REVIEW_MODE === 'stub'
-                    ? runStubReview(code)
-                    : await runGeminiReview(code);
+                const payload = toSafeDirectPromptPayload(req.body as unknown);
+                const responsePayload = await runPrompt(payload.content, payload.mode);
 
                 res.status(200).json({
                     status: 'success',
-                    tool: 'review_code',
-                    message: review,
+                    tool: responsePayload.tool,
+                    message: responsePayload.message,
                 });
             } catch (error) {
                 const message = normalizeErrorMessage(error);
-                console.error('[message] direct review failed:', message);
+                console.error('[message] direct prompt failed:', message);
                 res.status(400).json({
                     status: 'error',
-                    tool: 'review_code',
+                    tool: 'chat_expert',
                     message,
                 });
             }
