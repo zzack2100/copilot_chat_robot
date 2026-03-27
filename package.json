@@ -6,7 +6,11 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon src/server.ts",
+    "dev:live": "set MCP_REVIEW_MODE=live&& set MCP_TRANSPORT=sse&& ts-node src/server.ts",
+    "build:server": "tsc -p tsconfig.server.json",
     "build": "npm run web:build",
+    "build:all": "npm run build:server && npm run web:build",
+    "start": "node dist-server/server.js",
     "smoke:mcp": "ts-node src/mcp-smoke-test.ts",
     "web:dev": "vite",
     "web:build": "vite build",

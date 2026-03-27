@@ -95,8 +95,9 @@ const buildStubResult = (message: string): ReviewResult => {
 
 export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const mode = options?.mode ?? 'stub';
-  const sseUrl = options?.sseUrl ?? 'http://127.0.0.1:3000/mcp';
-  const reviewUrl = options?.reviewUrl ?? 'http://127.0.0.1:3000/message';
+  const backendOrigin = (import.meta.env.VITE_BACKEND_ORIGIN ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const sseUrl = options?.sseUrl ?? `${backendOrigin}/mcp`;
+  const reviewUrl = options?.reviewUrl ?? `${backendOrigin}/message`;
   const transport = options?.transport ?? defaultSseTransport;
   const streamRef = useRef<MCPStream | null>(null);
 
