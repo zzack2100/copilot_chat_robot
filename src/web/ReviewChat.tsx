@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import avatarImage from './assets/avatar.jpg';
 import { useMCP } from './hooks/useMCP.js';
 
@@ -25,6 +25,8 @@ type ReviewChatProps = {
     initialBackendOrigin?: string;
 };
 
+const CHAT_STORAGE_KEY = 'copilot-chat-history-v1';
+
 export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin = '' }: ReviewChatProps) {
     const [mode, setMode] = useState<'stub' | 'sse'>(() => {
         const savedMode = window.localStorage.getItem('copilot-review-mode');
@@ -34,7 +36,8 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         return window.localStorage.getItem('copilot-backend-origin') ?? initialBackendOrigin;
     });
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
+    const [historyStatus, setHistoryStatus] = useState<string>(() => getInitialHistoryStatus(window.localStorage.getItem(CHAT_STORAGE_KEY)));
     const [inputCode, setInputCode] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
@@ -48,6 +51,15 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         window.localStorage.setItem('copilot-backend-origin', backendOriginInput);
     }, [backendOriginInput]);
 
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+            setHistoryStatus(`已儲存 ${messages.length} 筆 (${formatClockTime(new Date())})`);
+        } catch {
+            setHistoryStatus('儲存失敗：瀏覽器儲存空間不可用');
+        }
+    }, [messages]);
+
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
@@ -56,10 +68,9 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         scrollToBottom();
     }, [messages]);
 
-    const handleReviewSubmit = async (event: FormEvent) => {
-        event.preventDefault();
+    const submitCurrentInput = async (): Promise<void> => {
         const trimmed = inputCode.trim();
-        if (!trimmed) {
+        if (!trimmed || reviewing) {
             return;
         }
 
@@ -68,6 +79,18 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         setInputCode('');
 
         await submitPrompt(trimmed);
+    };
+
+    const handleReviewSubmit = async (event: FormEvent) => {
+        event.preventDefault();
+        await submitCurrentInput();
+    };
+
+    const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            void submitCurrentInput();
+        }
     };
 
     useEffect(() => {
@@ -139,12 +162,25 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                             </button>
                         </div>
                         <span className='rounded border border-edge bg-black/30 px-2 py-1'>{statusText}</span>
+                        <span className='rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-emerald-300'>Local-only</span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>紀錄: {historyStatus}</span>
                         <button
                             type='button'
                             onClick={() => setSettingsOpen((prev) => !prev)}
                             className='rounded border border-edge bg-black/30 px-2 py-1 text-slate-300 transition hover:bg-white/5'
                         >
                             Backend
+                        </button>
+                        <button
+                            type='button'
+                            onClick={() => {
+                                setMessages([]);
+                                window.localStorage.removeItem(CHAT_STORAGE_KEY);
+                                setHistoryStatus('已清除本地紀錄');
+                            }}
+                            className='rounded border border-edge bg-black/30 px-2 py-1 text-slate-300 transition hover:bg-white/5'
+                        >
+                            清除紀錄
                         </button>
                         {mode === 'sse' && (
                             <button
@@ -240,13 +276,14 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                     <form onSubmit={handleReviewSubmit} className='grid gap-3'>
                         <textarea
                             className='min-h-[96px] w-full resize-none rounded-lg border border-edge bg-black/35 p-3 text-sm text-slate-100 outline-none transition focus:border-slate-400'
-                            placeholder='輸入問題，或貼上 C/C++ 程式碼...'
+                            placeholder='輸入問題，或貼上 C/C++ 程式碼...（Enter 送出 / Shift+Enter 換行）'
                             value={inputCode}
                             onChange={(e) => setInputCode(e.target.value)}
+                            onKeyDown={handleInputKeyDown}
                             spellCheck={false}
                         />
                         <div className='flex items-center justify-between gap-3'>
-                            <p className='text-xs text-slate-500'>一般對話會直接回覆；看起來像程式碼的內容會自動進入審閱模式。</p>
+                            <p className='text-xs text-slate-500'>一般對話會直接回覆；看起來像程式碼的內容會自動進入審閱模式。按 Enter 可送出，按 Shift+Enter 可換行。</p>
                             <button
                                 type='submit'
                                 disabled={reviewing || !inputCode.trim()}
@@ -260,6 +297,55 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
             </div>
         </main>
     );
+}
+
+function loadMessagesFromStorage(): ChatMessage[] {
+    try {
+        const raw = window.localStorage.getItem(CHAT_STORAGE_KEY);
+        if (!raw) {
+            return [];
+        }
+
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+
+        return parsed
+            .filter((item) => item && typeof item === 'object')
+            .map((item) => {
+                const record = item as Record<string, unknown>;
+                return {
+                    id: String(record['id'] ?? Date.now().toString()),
+                    role: record['role'] === 'assistant' ? 'assistant' : 'user',
+                    content: typeof record['content'] === 'string' ? record['content'] : '',
+                } as ChatMessage;
+            })
+            .filter((item) => item.content.length > 0);
+    } catch {
+        return [];
+    }
+}
+
+function getInitialHistoryStatus(rawStorage: string | null): string {
+    if (!rawStorage) {
+        return '尚未建立';
+    }
+
+    try {
+        const parsed = JSON.parse(rawStorage) as unknown;
+        const count = Array.isArray(parsed) ? parsed.length : 0;
+        return `已載入 ${count} 筆`;
+    } catch {
+        return '紀錄格式異常';
+    }
+}
+
+function formatClockTime(date: Date): string {
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
 }
 
 function stripJsonFences(raw: string): string {
