@@ -30,6 +30,7 @@ const defaultSseTransport: MCPTransport = {
 
 type UseMCPOptions = {
   mode?: MCPMode;
+  backendOrigin?: string;
   sseUrl?: string;
   reviewUrl?: string;
   transport?: MCPTransport;
@@ -95,7 +96,11 @@ const buildStubResult = (message: string): ReviewResult => {
 
 export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const mode = options?.mode ?? 'stub';
-  const backendOrigin = (import.meta.env.VITE_BACKEND_ORIGIN ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
+  const runtimeOrigin = options?.backendOrigin?.trim() ?? '';
+  const defaultOrigin = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://127.0.0.1:3000'
+    : '';
+  const backendOrigin = (runtimeOrigin || import.meta.env.VITE_BACKEND_ORIGIN || defaultOrigin).replace(/\/+$/, '');
   const sseUrl = options?.sseUrl ?? `${backendOrigin}/mcp`;
   const reviewUrl = options?.reviewUrl ?? `${backendOrigin}/message`;
   const transport = options?.transport ?? defaultSseTransport;
@@ -106,8 +111,13 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const [result, setResult] = useState<ReviewResult | null>(null);
 
   useEffect(() => {
-    setStatusText(mode === 'stub' ? 'Stub mode ready' : 'Live mode ready');
-  }, [mode]);
+    if (mode === 'stub') {
+      setStatusText('Stub mode ready');
+      return;
+    }
+
+    setStatusText(backendOrigin ? `Live mode ready: ${backendOrigin}` : 'Live mode requires backend URL');
+  }, [backendOrigin, mode]);
 
   const connectSse = useCallback(() => {
     if (mode !== 'sse') {
@@ -163,6 +173,10 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         return;
       }
 
+      if (!backendOrigin) {
+        throw new Error('Live mode requires a backend URL. Please set Backend URL in the header settings.');
+      }
+
       setStatusText('Live request in progress...');
       const response = await fetch(reviewUrl, {
         method: 'POST',
@@ -171,6 +185,11 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         },
         body: JSON.stringify({ message: trimmed }),
       });
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        throw new Error(responseText || `Backend request failed with status ${response.status}.`);
+      }
 
       const payload = (await response.json()) as Partial<ReviewResult>;
       if (typeof payload.status !== 'string' || typeof payload.tool !== 'string' || typeof payload.message !== 'string') {
@@ -195,7 +214,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     } finally {
       setReviewing(false);
     }
-  }, [mode, reviewUrl]);
+  }, [backendOrigin, mode, reviewUrl]);
 
   return useMemo(
     () => ({

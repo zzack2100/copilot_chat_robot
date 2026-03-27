@@ -21,15 +21,32 @@ type ParsedMessage = {
 };
 
 type ReviewChatProps = {
-    mode?: 'stub' | 'sse';
+    initialMode?: 'stub' | 'sse';
+    initialBackendOrigin?: string;
 };
 
-export default function ReviewChat({ mode = 'stub' }: ReviewChatProps) {
+export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin = '' }: ReviewChatProps) {
+    const [mode, setMode] = useState<'stub' | 'sse'>(() => {
+        const savedMode = window.localStorage.getItem('copilot-review-mode');
+        return savedMode === 'sse' || savedMode === 'stub' ? savedMode : initialMode;
+    });
+    const [backendOriginInput, setBackendOriginInput] = useState(() => {
+        return window.localStorage.getItem('copilot-backend-origin') ?? initialBackendOrigin;
+    });
+    const [settingsOpen, setSettingsOpen] = useState(false);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputCode, setInputCode] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
-    const { result, reviewing, statusText, submitPrompt, connectSse } = useMCP({ mode });
+    const { result, reviewing, statusText, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+
+    useEffect(() => {
+        window.localStorage.setItem('copilot-review-mode', mode);
+    }, [mode]);
+
+    useEffect(() => {
+        window.localStorage.setItem('copilot-backend-origin', backendOriginInput);
+    }, [backendOriginInput]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -105,10 +122,30 @@ export default function ReviewChat({ mode = 'stub' }: ReviewChatProps) {
                         <h1 className='mt-1 text-lg font-semibold text-slate-100'>Thread-Safety Review Bot</h1>
                     </div>
                     <div className='flex items-center gap-2 text-xs text-slate-400'>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>
-                            Mode: {mode === 'sse' ? 'LIVE' : 'STUB'}
-                        </span>
+                        <div className='flex overflow-hidden rounded border border-edge bg-black/30'>
+                            <button
+                                type='button'
+                                onClick={() => setMode('stub')}
+                                className={`px-2 py-1 transition ${mode === 'stub' ? 'bg-slate-200 text-slate-900' : 'text-slate-300 hover:bg-white/5'}`}
+                            >
+                                STUB
+                            </button>
+                            <button
+                                type='button'
+                                onClick={() => setMode('sse')}
+                                className={`px-2 py-1 transition ${mode === 'sse' ? 'bg-sky-400/90 text-slate-950' : 'text-slate-300 hover:bg-white/5'}`}
+                            >
+                                LIVE
+                            </button>
+                        </div>
                         <span className='rounded border border-edge bg-black/30 px-2 py-1'>{statusText}</span>
+                        <button
+                            type='button'
+                            onClick={() => setSettingsOpen((prev) => !prev)}
+                            className='rounded border border-edge bg-black/30 px-2 py-1 text-slate-300 transition hover:bg-white/5'
+                        >
+                            Backend
+                        </button>
                         {mode === 'sse' && (
                             <button
                                 type='button'
@@ -120,6 +157,27 @@ export default function ReviewChat({ mode = 'stub' }: ReviewChatProps) {
                         )}
                     </div>
                 </div>
+                {settingsOpen ? (
+                    <div className='mx-auto mt-3 flex w-full max-w-4xl flex-col gap-3 rounded-xl border border-edge bg-black/30 p-3 md:flex-row md:items-center'>
+                        <label className='flex-1 text-xs text-slate-400'>
+                            Backend URL
+                            <input
+                                type='url'
+                                value={backendOriginInput}
+                                onChange={(event) => setBackendOriginInput(event.target.value)}
+                                placeholder='https://your-backend.up.railway.app'
+                                className='mt-1 w-full rounded-lg border border-edge bg-black/35 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-slate-400'
+                            />
+                        </label>
+                        <button
+                            type='button'
+                            onClick={() => setBackendOriginInput(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:3000' : '')}
+                            className='rounded-lg border border-edge bg-black/25 px-3 py-2 text-sm text-slate-300 transition hover:bg-black/40'
+                        >
+                            Reset
+                        </button>
+                    </div>
+                ) : null}
             </header>
 
             <div className='flex-1 overflow-y-auto px-4 py-6 md:px-6'>
