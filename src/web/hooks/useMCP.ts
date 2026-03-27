@@ -41,9 +41,24 @@ type UseMCPResult = {
   statusText: string;
   result: ReviewResult | null;
   reviewing: boolean;
+  backendInfo: BackendInfo | null;
   submitPrompt: (message: string) => Promise<void>;
   connectSse: () => void;
 };
+
+type BackendInfo = {
+  status: string;
+  service: string;
+  version: string;
+  build: string;
+  mode: 'live' | 'stub';
+  transport: 'stdio' | 'sse';
+  capabilities: string[];
+  models: string[];
+  reachable: boolean;
+};
+
+type PromptTool = 'review_code' | 'chat_expert' | 'get_current_weather' | 'search_web' | 'get_latest_news';
 
 const looksLikeCode = (input: string): boolean => {
   const normalized = input.trim();
@@ -53,6 +68,36 @@ const looksLikeCode = (input: string): boolean => {
 
   const signals = ['#include', 'int main(', 'void ', 'volatile ', 'uint8_t', 'uint16_t', 'uint32_t', 'if (', 'while (', 'for (', '{', '}', ';'];
   return signals.some((signal) => normalized.includes(signal)) || normalized.split(/\r?\n/).length >= 4;
+};
+
+const looksLikeWeatherPrompt = (input: string): boolean => {
+  const normalized = input.toLowerCase();
+  return normalized.includes('weather') || normalized.includes('天氣') || normalized.includes('氣溫') || normalized.includes('下雨');
+};
+
+const looksLikeNewsPrompt = (input: string): boolean => {
+  const normalized = input.toLowerCase();
+  return normalized.includes('news') || normalized.includes('新聞') || normalized.includes('google');
+};
+
+const inferPromptTool = (input: string): PromptTool => {
+  if (looksLikeWeatherPrompt(input)) {
+    return 'get_current_weather';
+  }
+
+  if (looksLikeNewsPrompt(input)) {
+    return 'get_latest_news';
+  }
+
+  if (input.toLowerCase().includes('搜尋') || input.toLowerCase().includes('search') || input.toLowerCase().includes('查詢')) {
+    return 'search_web';
+  }
+
+  if (looksLikeCode(input)) {
+    return 'review_code';
+  }
+
+  return 'chat_expert';
 };
 
 const buildStubResult = (message: string): ReviewResult => {
@@ -103,21 +148,97 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const backendOrigin = (runtimeOrigin || import.meta.env.VITE_BACKEND_ORIGIN || defaultOrigin).replace(/\/+$/, '');
   const sseUrl = options?.sseUrl ?? `${backendOrigin}/mcp`;
   const reviewUrl = options?.reviewUrl ?? `${backendOrigin}/message`;
+  const healthUrl = backendOrigin ? `${backendOrigin}/health` : '';
   const transport = options?.transport ?? defaultSseTransport;
   const streamRef = useRef<MCPStream | null>(null);
 
   const [statusText, setStatusText] = useState(mode === 'stub' ? 'Stub mode ready' : 'SSE not connected');
   const [reviewing, setReviewing] = useState(false);
   const [result, setResult] = useState<ReviewResult | null>(null);
+  const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
 
   useEffect(() => {
     if (mode === 'stub') {
       setStatusText('Stub mode ready');
+      setBackendInfo(null);
       return;
     }
 
     setStatusText(backendOrigin ? `Live mode ready: ${backendOrigin}` : 'Live mode requires backend URL');
   }, [backendOrigin, mode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (mode !== 'sse' || !healthUrl) {
+      setBackendInfo(null);
+      return;
+    }
+
+    const fetchHealth = async () => {
+      try {
+        const response = await fetch(healthUrl, {
+          headers: {
+            Accept: 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Health check failed with status ${response.status}`);
+        }
+
+        const payload = await response.json() as Partial<BackendInfo>;
+        if (cancelled) {
+          return;
+        }
+
+        if (
+          typeof payload.status !== 'string' ||
+          typeof payload.service !== 'string' ||
+          typeof payload.version !== 'string' ||
+          typeof payload.build !== 'string' ||
+          (payload.mode !== 'live' && payload.mode !== 'stub') ||
+          (payload.transport !== 'stdio' && payload.transport !== 'sse') ||
+          !Array.isArray(payload.capabilities) ||
+          !Array.isArray(payload.models)
+        ) {
+          throw new Error('Invalid health payload from backend');
+        }
+
+        setBackendInfo({
+          status: payload.status,
+          service: payload.service,
+          version: payload.version,
+          build: payload.build,
+          mode: payload.mode,
+          transport: payload.transport,
+          capabilities: payload.capabilities.map((item) => String(item)),
+          models: payload.models.map((item) => String(item)),
+          reachable: true,
+        });
+      } catch {
+        if (!cancelled) {
+          setBackendInfo({
+            status: 'error',
+            service: 'unreachable',
+            version: 'unknown',
+            build: 'unknown',
+            mode: 'stub',
+            transport: 'sse',
+            capabilities: [],
+            models: [],
+            reachable: false,
+          });
+        }
+      }
+    };
+
+    void fetchHealth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [healthUrl, mode]);
 
   const connectSse = useCallback(() => {
     if (mode !== 'sse') {
@@ -163,6 +284,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     }
 
     setReviewing(true);
+    const promptTool = inferPromptTool(trimmed);
 
     try {
       if (mode === 'stub') {
@@ -177,13 +299,24 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         throw new Error('Live mode requires a backend URL. Please set Backend URL in the header settings.');
       }
 
-      setStatusText('Live request in progress...');
+      if (promptTool === 'get_current_weather') {
+        setStatusText('呼叫工具中: get_current_weather...');
+      } else if (promptTool === 'get_latest_news') {
+        setStatusText('呼叫工具中: get_latest_news...');
+      } else if (promptTool === 'search_web') {
+        setStatusText('呼叫工具中: search_web...');
+      } else if (promptTool === 'review_code') {
+        setStatusText('Live review in progress...');
+      } else {
+        setStatusText('Live request in progress...');
+      }
+
       const response = await fetch(reviewUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({ message: trimmed, mode: promptTool }),
       });
 
       if (!response.ok) {
@@ -202,7 +335,11 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         message: payload.message,
       });
 
-      setStatusText(payload.status === 'success' ? 'Live response received' : 'Live request failed');
+      if (payload.status === 'success' && (payload.tool === 'get_current_weather' || payload.tool === 'get_latest_news' || payload.tool === 'search_web')) {
+        setStatusText(`工具完成: ${payload.tool}`);
+      } else {
+        setStatusText(payload.status === 'success' ? 'Live response received' : 'Live request failed');
+      }
     } catch (error) {
       setStatusText('Live request failed');
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -222,9 +359,10 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       statusText,
       result,
       reviewing,
+      backendInfo,
       submitPrompt,
       connectSse,
     }),
-    [connectSse, mode, result, submitPrompt, reviewing, statusText]
+    [backendInfo, connectSse, mode, result, submitPrompt, reviewing, statusText]
   );
 }

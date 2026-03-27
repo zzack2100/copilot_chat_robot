@@ -26,6 +26,11 @@ type ReviewChatProps = {
 };
 
 const CHAT_STORAGE_KEY = 'copilot-chat-history-v1';
+const QUICK_ACTIONS = [
+    { label: '查天氣', prompt: '幫我查汐止現在天氣' },
+    { label: '查新聞', prompt: 'latest Taiwan technology news' },
+    { label: '網頁搜尋', prompt: 'search RTOS priority inversion mitigation' },
+] as const;
 
 export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin = '' }: ReviewChatProps) {
     const [mode, setMode] = useState<'stub' | 'sse'>(() => {
@@ -41,7 +46,7 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     const [inputCode, setInputCode] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
-    const { result, reviewing, statusText, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+    const { result, reviewing, statusText, backendInfo, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
 
     useEffect(() => {
         window.localStorage.setItem('copilot-review-mode', mode);
@@ -53,6 +58,12 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
 
     useEffect(() => {
         try {
+            if (messages.length === 0) {
+                window.localStorage.removeItem(CHAT_STORAGE_KEY);
+                setHistoryStatus('尚未建立');
+                return;
+            }
+
             window.localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
             setHistoryStatus(`已儲存 ${messages.length} 筆 (${formatClockTime(new Date())})`);
         } catch {
@@ -81,6 +92,17 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         await submitPrompt(trimmed);
     };
 
+    const runQuickAction = async (prompt: string): Promise<void> => {
+        if (reviewing) {
+            return;
+        }
+
+        const userMessageId = Date.now().toString();
+        setMessages((prev) => [...prev, { id: userMessageId, role: 'user', content: prompt }]);
+        setInputCode('');
+        await submitPrompt(prompt);
+    };
+
     const handleReviewSubmit = async (event: FormEvent) => {
         event.preventDefault();
         await submitCurrentInput();
@@ -101,9 +123,12 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
             }
             processedResultRef.current = resultKey;
 
-            if (result.tool === 'chat_expert') {
+            if (result.tool === 'chat_expert' || result.tool === 'get_current_weather' || result.tool === 'get_latest_news' || result.tool === 'search_web') {
                 const replyId = Date.now().toString() + '_chat';
-                setMessages((prev) => [...prev, { id: replyId, role: 'assistant', content: result.message }]);
+                const content = result.tool === 'chat_expert'
+                    ? result.message
+                    : `已呼叫工具 ${result.tool}。\n\n${result.message}`;
+                setMessages((prev) => [...prev, { id: replyId, role: 'assistant', content }]);
                 return;
             }
 
@@ -214,10 +239,36 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                         </button>
                     </div>
                 ) : null}
+                {mode === 'sse' ? (
+                    <div className='mx-auto mt-3 flex w-full max-w-4xl flex-wrap gap-2 text-[11px] text-slate-300'>
+                        <span className={`rounded border px-2 py-1 ${backendInfo?.reachable ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
+                            Backend: {backendInfo?.reachable ? 'reachable' : 'unknown'}
+                        </span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Version: {backendInfo?.version ?? '...'}</span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Build: {backendInfo?.build ?? '...'}</span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Mode: {backendInfo?.mode ?? '...'}</span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Transport: {backendInfo?.transport ?? '...'}</span>
+                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Tools: {backendInfo?.capabilities.join(', ') || '...'}</span>
+                    </div>
+                ) : null}
             </header>
 
             <div className='flex-1 overflow-y-auto px-4 py-6 md:px-6'>
                 <div className='mx-auto max-w-2xl space-y-4'>
+                    <div className='flex flex-wrap gap-2'>
+                        {QUICK_ACTIONS.map((item) => (
+                            <button
+                                key={item.label}
+                                type='button'
+                                onClick={() => void runQuickAction(item.prompt)}
+                                disabled={reviewing}
+                                className='rounded-full border border-edge bg-black/30 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60'
+                            >
+                                {item.label}
+                            </button>
+                        ))}
+                    </div>
+
                     {messages.length === 0 ? (
                         <div className='rounded-lg border border-dashed border-edge bg-black/25 p-6 text-center text-sm text-slate-400'>
                             <p className='mb-2 text-slate-300'>歡迎來到 Thread-Safety 專家助手</p>
