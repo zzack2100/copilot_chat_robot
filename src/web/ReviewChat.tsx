@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import avatarImage from './assets/avatar.jpg';
+import ReviewHeader from './components/ReviewHeader.js';
 import { useMCP } from './hooks/useMCP.js';
 
 type ChatMessage = {
@@ -32,13 +33,29 @@ const QUICK_ACTIONS = [
     { label: '網頁搜尋', prompt: 'search RTOS priority inversion mitigation' },
 ] as const;
 
+const REQUIRED_LIVE_TOOLS = ['get_current_weather', 'get_latest_news', 'search_web'] as const;
+
+const TOOL_MESSAGE_PREFIXES = ['已呼叫工具 get_current_weather', '已呼叫工具 get_latest_news', '已呼叫工具 search_web'];
+const CAPABILITY_PROMPTS: Record<string, string> = {
+    review_code: 'volatile int flag = 0;\nvoid ISR(void) { flag = 1; }\nint main(void) {\n  while (flag == 0) {}\n  return 0;\n}',
+    chat_expert: '請說明 ISR 與 main loop 共用變數時，如何避免 race condition？',
+    get_current_weather: '幫我查汐止現在天氣',
+    search_web: 'search RTOS priority inversion mitigation',
+    get_latest_news: 'latest Taiwan technology news',
+};
+
 export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin = '' }: ReviewChatProps) {
     const [mode, setMode] = useState<'stub' | 'sse'>(() => {
         const savedMode = window.localStorage.getItem('copilot-review-mode');
+        if (initialMode === 'sse') {
+            return 'sse';
+        }
         return savedMode === 'sse' || savedMode === 'stub' ? savedMode : initialMode;
     });
     const [backendOriginInput, setBackendOriginInput] = useState(() => {
-        return window.localStorage.getItem('copilot-backend-origin') ?? initialBackendOrigin;
+        const savedOrigin = window.localStorage.getItem('copilot-backend-origin')?.trim() ?? '';
+        const initialOrigin = initialBackendOrigin.trim();
+        return initialOrigin || savedOrigin;
     });
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
@@ -47,6 +64,8 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
     const { result, reviewing, statusText, backendInfo, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+    const missingLiveTools = REQUIRED_LIVE_TOOLS.filter((tool) => !backendInfo?.capabilities.includes(tool));
+    const showBackendWarning = mode === 'sse' && (!backendInfo?.reachable || missingLiveTools.length > 0);
 
     useEffect(() => {
         window.localStorage.setItem('copilot-review-mode', mode);
@@ -55,6 +74,15 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     useEffect(() => {
         window.localStorage.setItem('copilot-backend-origin', backendOriginInput);
     }, [backendOriginInput]);
+
+    useEffect(() => {
+        const normalizedInitialOrigin = initialBackendOrigin.trim();
+        if (!normalizedInitialOrigin) {
+            return;
+        }
+
+        setBackendOriginInput((currentOrigin) => currentOrigin.trim() || normalizedInitialOrigin);
+    }, [initialBackendOrigin]);
 
     useEffect(() => {
         try {
@@ -101,6 +129,15 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         setMessages((prev) => [...prev, { id: userMessageId, role: 'user', content: prompt }]);
         setInputCode('');
         await submitPrompt(prompt);
+    };
+
+    const runCapabilityAction = async (capability: string): Promise<void> => {
+        const prompt = CAPABILITY_PROMPTS[capability];
+        if (!prompt) {
+            return;
+        }
+
+        await runQuickAction(prompt);
     };
 
     const handleReviewSubmit = async (event: FormEvent) => {
@@ -163,95 +200,30 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
 
     return (
         <main className='grid-overlay flex h-screen flex-col bg-slate-950'>
-            <header className='border-b border-edge bg-slate-900/50 px-4 py-3 md:px-6'>
-                <div className='mx-auto flex w-full max-w-4xl items-center justify-between'>
-                    <div>
-                        <p className='text-xs tracking-[0.26em] text-slate-400'>MCP 代碼審查助手</p>
-                        <h1 className='mt-1 text-lg font-semibold text-slate-100'>Thread-Safety Review Bot</h1>
-                    </div>
-                    <div className='flex items-center gap-2 text-xs text-slate-400'>
-                        <div className='flex overflow-hidden rounded border border-edge bg-black/30'>
-                            <button
-                                type='button'
-                                onClick={() => setMode('stub')}
-                                className={`px-2 py-1 transition ${mode === 'stub' ? 'bg-slate-200 text-slate-900' : 'text-slate-300 hover:bg-white/5'}`}
-                            >
-                                STUB
-                            </button>
-                            <button
-                                type='button'
-                                onClick={() => setMode('sse')}
-                                className={`px-2 py-1 transition ${mode === 'sse' ? 'bg-sky-400/90 text-slate-950' : 'text-slate-300 hover:bg-white/5'}`}
-                            >
-                                LIVE
-                            </button>
-                        </div>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>{statusText}</span>
-                        <span className='rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-emerald-300'>Local-only</span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>紀錄: {historyStatus}</span>
-                        <button
-                            type='button'
-                            onClick={() => setSettingsOpen((prev) => !prev)}
-                            className='rounded border border-edge bg-black/30 px-2 py-1 text-slate-300 transition hover:bg-white/5'
-                        >
-                            Backend
-                        </button>
-                        <button
-                            type='button'
-                            onClick={() => {
-                                setMessages([]);
-                                window.localStorage.removeItem(CHAT_STORAGE_KEY);
-                                setHistoryStatus('已清除本地紀錄');
-                            }}
-                            className='rounded border border-edge bg-black/30 px-2 py-1 text-slate-300 transition hover:bg-white/5'
-                        >
-                            清除紀錄
-                        </button>
-                        {mode === 'sse' && (
-                            <button
-                                type='button'
-                                onClick={connectSse}
-                                className='rounded border border-sky-500/50 bg-sky-500/10 px-2 py-1 text-sky-200 transition hover:bg-sky-500/20'
-                            >
-                                SSE
-                            </button>
-                        )}
-                    </div>
-                </div>
-                {settingsOpen ? (
-                    <div className='mx-auto mt-3 flex w-full max-w-4xl flex-col gap-3 rounded-xl border border-edge bg-black/30 p-3 md:flex-row md:items-center'>
-                        <label className='flex-1 text-xs text-slate-400'>
-                            Backend URL
-                            <input
-                                type='url'
-                                value={backendOriginInput}
-                                onChange={(event) => setBackendOriginInput(event.target.value)}
-                                placeholder='https://your-backend.up.railway.app'
-                                className='mt-1 w-full rounded-lg border border-edge bg-black/35 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-slate-400'
-                            />
-                        </label>
-                        <button
-                            type='button'
-                            onClick={() => setBackendOriginInput(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:3000' : '')}
-                            className='rounded-lg border border-edge bg-black/25 px-3 py-2 text-sm text-slate-300 transition hover:bg-black/40'
-                        >
-                            Reset
-                        </button>
-                    </div>
-                ) : null}
-                {mode === 'sse' ? (
-                    <div className='mx-auto mt-3 flex w-full max-w-4xl flex-wrap gap-2 text-[11px] text-slate-300'>
-                        <span className={`rounded border px-2 py-1 ${backendInfo?.reachable ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-200'}`}>
-                            Backend: {backendInfo?.reachable ? 'reachable' : 'unknown'}
-                        </span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Version: {backendInfo?.version ?? '...'}</span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Build: {backendInfo?.build ?? '...'}</span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Mode: {backendInfo?.mode ?? '...'}</span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Transport: {backendInfo?.transport ?? '...'}</span>
-                        <span className='rounded border border-edge bg-black/30 px-2 py-1'>Tools: {backendInfo?.capabilities.join(', ') || '...'}</span>
-                    </div>
-                ) : null}
-            </header>
+            <ReviewHeader
+                mode={mode}
+                statusText={statusText}
+                historyStatus={historyStatus}
+                settingsOpen={settingsOpen}
+                backendOriginInput={backendOriginInput}
+                backendInfo={backendInfo}
+                missingLiveTools={missingLiveTools}
+                showBackendWarning={showBackendWarning}
+                capabilityActionDisabled={reviewing}
+                onModeChange={setMode}
+                onToggleSettings={() => setSettingsOpen((prev) => !prev)}
+                onClearHistory={() => {
+                    setMessages([]);
+                    window.localStorage.removeItem(CHAT_STORAGE_KEY);
+                    setHistoryStatus('已清除本地紀錄');
+                }}
+                onConnectSse={connectSse}
+                onBackendOriginChange={setBackendOriginInput}
+                onResetBackendOrigin={() => setBackendOriginInput(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:3000' : '')}
+                onCapabilitySelect={(capability) => {
+                    void runCapabilityAction(capability);
+                }}
+            />
 
             <div className='flex-1 overflow-y-auto px-4 py-6 md:px-6'>
                 <div className='mx-auto max-w-2xl space-y-4'>
@@ -287,8 +259,9 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                                             alt='Senior embedded expert avatar'
                                             className='h-10 w-10 rounded-full border-2 border-blue-900 object-cover shadow-[0_0_18px_rgba(30,64,175,0.35)] ring-1 ring-slate-700/80'
                                         />
-                                        <div className='max-w-xs rounded-lg border border-edge bg-slate-800 px-4 py-3 text-sm leading-relaxed text-slate-100 md:max-w-md lg:max-w-lg'>
+                                            <div className={`assistant-card max-w-xs border border-edge bg-slate-800 text-sm leading-relaxed text-slate-100 md:max-w-md lg:max-w-lg ${isToolAssistantMessage(msg.content) ? 'assistant-card--tool' : ''}`}>
                                             <p className='mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400'>Senior Embedded Expert</p>
+                                                {isToolAssistantMessage(msg.content) ? <p className='tool-kicker'>Tool Response</p> : null}
                                             <p className='whitespace-pre-wrap text-xs md:text-sm'>{msg.content}</p>
                                         </div>
                                     </div>
@@ -308,10 +281,14 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                                     alt='Senior embedded expert avatar'
                                     className='h-10 w-10 rounded-full border-2 border-blue-900 object-cover shadow-[0_0_18px_rgba(30,64,175,0.35)] ring-1 ring-slate-700/80'
                                 />
-                                <div className='rounded-lg border border-edge bg-slate-800 px-4 py-3'>
+                                <div className='assistant-card assistant-card--tool border border-edge bg-slate-800'>
                                     <p className='mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400'>Senior Embedded Expert</p>
                                     <div className='flex items-center gap-2'>
-                                        <div className='h-2 w-2 animate-pulse rounded-full bg-slate-400'></div>
+                                        <div className='loading-dots' aria-hidden='true'>
+                                            <span></span>
+                                            <span></span>
+                                            <span></span>
+                                        </div>
                                         <span className='text-xs text-slate-400'>助手正在分析中...</span>
                                     </div>
                                 </div>
@@ -348,6 +325,10 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
             </div>
         </main>
     );
+}
+
+function isToolAssistantMessage(content: string): boolean {
+    return TOOL_MESSAGE_PREFIXES.some((prefix) => content.startsWith(prefix));
 }
 
 function loadMessagesFromStorage(): ChatMessage[] {

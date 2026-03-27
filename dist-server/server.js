@@ -27,9 +27,6 @@ const GEMINI_MODELS = (process.env.GEMINI_MODEL_CANDIDATES?.trim() || process.en
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 const geminiApiKey = process.env.GEMINI_API_KEY;
-if (REVIEW_MODE === 'live' && !geminiApiKey) {
-    throw new Error('Missing GEMINI_API_KEY in environment variables (required for MCP_REVIEW_MODE=live).');
-}
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
 const SYSTEM_INSTRUCTION = `
 You are a senior C/C++ Embedded Software Engineer specialized in automotive systems, MCU programming, and MISRA-C compliance.
@@ -513,9 +510,16 @@ const runStubChat = (message) => {
 const runPrompt = async (content, explicitMode) => {
     const tool = resolvePromptMode(content, explicitMode);
     if (tool === 'review_code') {
-        const message = REVIEW_MODE === 'stub'
-            ? runStubReview(content)
-            : await runGeminiReview(content);
+        if (REVIEW_MODE === 'stub') {
+            return { tool, message: runStubReview(content) };
+        }
+        if (!genAI) {
+            return {
+                tool: 'chat_expert',
+                message: '目前後端已進入 Live 模式，但尚未設定 GEMINI_API_KEY，因此只能使用天氣、新聞與網頁搜尋工具；一般對話與程式碼審閱暫時不可用。',
+            };
+        }
+        const message = await runGeminiReview(content);
         return { tool, message };
     }
     if (tool === 'get_current_weather') {
@@ -532,19 +536,25 @@ const runPrompt = async (content, explicitMode) => {
             : await getCurrentWeatherLive(location);
         return { tool, message };
     }
-    if (isNewsRequest(content)) {
+    if (tool === 'get_latest_news') {
         const topic = inferNewsTopicFromPrompt(content);
         const message = REVIEW_MODE === 'stub'
             ? runStubChat(content)
             : await getLatestNewsLive(topic);
         return { tool: REVIEW_MODE === 'stub' ? 'chat_expert' : 'get_latest_news', message };
     }
-    if (isSearchRequest(content)) {
+    if (tool === 'search_web') {
         const query = inferSearchQueryFromPrompt(content);
         const message = REVIEW_MODE === 'stub'
             ? runStubChat(content)
             : await searchWebLive(query);
         return { tool: REVIEW_MODE === 'stub' ? 'chat_expert' : 'search_web', message };
+    }
+    if (REVIEW_MODE !== 'stub' && !genAI) {
+        return {
+            tool: 'chat_expert',
+            message: '目前後端已進入 Live 模式，但尚未設定 GEMINI_API_KEY，因此一般對話不可用；您仍可使用查天氣、查新聞、網頁搜尋。',
+        };
     }
     const message = REVIEW_MODE === 'stub'
         ? runStubChat(content)
