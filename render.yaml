@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: copilot-mcp-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: MCP_REVIEW_MODE
+        value: live
+      - key: MCP_TRANSPORT
+        value: sse
+      - key: MCP_WEB_HOST
+        value: 0.0.0.0
+      - key: GEMINI_MODEL_CANDIDATES
+        value: gemini-2.5-flash,gemini-2.0-flash-exp,gemini-1.5-flash
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MCP_WEB_CORS_ORIGIN
+        sync: false
+  - type: web
+    name: copilot-web-frontend
+    runtime: static
+    plan: free
+    buildCommand: npm ci && npm run web:build
+    staticPublishPath: ./dist
+    autoDeployTrigger: commit
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_MCP_MODE
+        value: live
+      - key: VITE_APP_VERSION
+        value: 1.0.0-render
+      - key: VITE_BACKEND_ORIGIN
+        sync: false

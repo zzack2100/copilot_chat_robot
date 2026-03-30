@@ -46,6 +46,34 @@ Copilot-Bot is a multi-platform chatbot for mobile and PC that connects to multi
 - Introduce security and governance controls for prompt handling and provider usage.
 - Improve observability, error handling, and deployment readiness.
 
+## Deployment
+
+### Render Migration
+
+This repository is set up to migrate from Railway to Render with a split deployment model:
+
+- Backend: Docker-based Render Web Service
+- Frontend: Render Static Site for the Vite build output
+
+Key deployment files:
+
+- [Dockerfile](Dockerfile)
+- [.dockerignore](.dockerignore)
+- [render.yaml](render.yaml)
+- [RENDER.md](RENDER.md)
+
+Recommended migration sequence:
+
+1. Deploy the backend Web Service first.
+2. Verify the backend health endpoint at `/health`.
+3. Deploy the frontend Static Site.
+4. Set `VITE_BACKEND_ORIGIN` in the frontend environment to the Render backend URL.
+5. Verify that the frontend enters live mode and displays backend metadata correctly.
+
+### Render Free Tier Note
+
+Render free services can spin down after inactivity. Expect cold-start latency on the first request after idle time. For chat UX, a frontend warm-up request to `/health` is recommended.
+
 ## License
 
 Add the appropriate license information for this project here.

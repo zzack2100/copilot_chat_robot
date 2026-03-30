@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-server
+.git
+.gitignore
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+coverage
+.DS_Store
+Thumbs.db
+README.md
+SDD.md
+railway.toml
+vercel.json
