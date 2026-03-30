@@ -66,7 +66,7 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     const [inputCode, setInputCode] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
-    const { result, reviewing, statusText, backendInfo, alertMessage, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+    const { result, reviewing, statusText, backendInfo, alertMessage, clearAlertMessage, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
     const missingLiveTools = REQUIRED_LIVE_TOOLS.filter((tool) => !backendInfo?.capabilities.includes(tool));
     const showBackendWarning = mode === 'sse' && (!backendInfo?.reachable || missingLiveTools.length > 0);
 
@@ -113,6 +113,21 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
+
+    useEffect(() => {
+        if (!alertMessage) {
+            return;
+        }
+
+        // EN: Auto-hide transient rate-limit warnings after a short delay. ZH: 讓限流警示在短時間後自動收起。
+        const timeoutId = window.setTimeout(() => {
+            clearAlertMessage();
+        }, 12_000);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+        };
+    }, [alertMessage, clearAlertMessage]);
 
     const submitCurrentInput = async (): Promise<void> => {
         const trimmed = inputCode.trim();
@@ -237,8 +252,19 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
             <div className='flex-1 overflow-y-auto px-4 py-6 md:px-6'>
                 <div className='mx-auto max-w-2xl space-y-4'>
                     {alertMessage ? (
-                        <div className='rounded-xl border border-amber-400/50 bg-amber-400/12 px-4 py-3 text-sm text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'>
-                            <p className='font-semibold tracking-[0.08em] text-amber-200'>API WARNING</p>
+                        <div className='alert-banner rounded-xl border border-amber-400/50 bg-amber-400/12 px-4 py-3 text-sm text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'>
+                            <div className='alert-banner__header'>
+                                <p className='font-semibold tracking-[0.08em] text-amber-200'>API WARNING</p>
+                                <button
+                                    type='button'
+                                    onClick={clearAlertMessage}
+                                    className='alert-banner__close'
+                                    aria-label='Dismiss API warning'
+                                    title='關閉提醒'
+                                >
+                                    ×
+                                </button>
+                            </div>
                             <p className='mt-1'>{alertMessage}</p>
                         </div>
                     ) : null}

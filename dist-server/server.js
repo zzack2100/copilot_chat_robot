@@ -68,7 +68,7 @@ Behavior rules:
 const REVIEW_TIMEOUT_MS = 90_000;
 const REVIEW_MAX_ATTEMPTS = 2;
 const RETRY_BASE_DELAY_MS = 1_200;
-const RETRY_429_DELAYS_MS = [1_000, 2_000, 4_000];
+const DIRECT_PROMPT_BACKOFF_DELAYS_MS = [1_000, 2_000, 4_000];
 const OPEN_METEO_GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const DUCKDUCKGO_INSTANT_ANSWER_URL = 'https://api.duckduckgo.com/';
@@ -453,6 +453,22 @@ const getLatestNewsLive = async (topic) => {
     lines.push('資料來源：Google News RSS');
     return lines.join('\n');
 };
+const tryGeminiModelOnce = async (modelName, prompt, systemInstruction) => {
+    if (!genAI) {
+        throw new Error('Gemini client is not initialized. Check MCP_REVIEW_MODE and GEMINI_API_KEY.');
+    }
+    const activeModel = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction,
+    });
+    const result = await withTimeout(activeModel.generateContent(prompt), REVIEW_TIMEOUT_MS);
+    const response = await result.response;
+    const text = response.text().trim();
+    if (!text) {
+        throw new Error('Gemini returned an empty response.');
+    }
+    return text;
+};
 const runGeminiText = async (prompt, systemInstruction, logPrefix) => {
     if (!genAI) {
         throw new Error('Gemini client is not initialized. Check MCP_REVIEW_MODE and GEMINI_API_KEY.');
@@ -461,48 +477,44 @@ const runGeminiText = async (prompt, systemInstruction, logPrefix) => {
         throw new Error('No Gemini model candidates configured.');
     }
     let lastError;
-    let quotaExceeded = false;
-    for (const modelName of GEMINI_MODELS) {
-        const activeModel = genAI.getGenerativeModel({
-            model: modelName,
-            systemInstruction,
-        });
-        const maxGeminiAttempts = Math.max(REVIEW_MAX_ATTEMPTS, RETRY_429_DELAYS_MS.length + 1);
-        for (let attempt = 1; attempt <= maxGeminiAttempts; attempt += 1) {
+    let sawQuotaError = false;
+    for (let round = 0; round <= DIRECT_PROMPT_BACKOFF_DELAYS_MS.length; round += 1) {
+        let roundSawQuotaError = false;
+        for (const modelName of GEMINI_MODELS) {
             try {
-                const result = await withTimeout(activeModel.generateContent(prompt), REVIEW_TIMEOUT_MS);
-                const response = await result.response;
-                const text = response.text().trim();
-                if (!text) {
-                    throw new Error('Gemini returned an empty response.');
-                }
-                return text;
+                return await tryGeminiModelOnce(modelName, prompt, systemInstruction);
             }
             catch (error) {
                 lastError = error;
                 if (isModelNotFoundError(error)) {
                     console.error(`[${logPrefix}] model ${modelName} not available, trying next candidate...`);
-                    break;
+                    continue;
                 }
                 if (isQuotaOrRateLimitError(error)) {
-                    quotaExceeded = true;
-                    const retryDelayMs = RETRY_429_DELAYS_MS[attempt - 1];
-                    if (retryDelayMs !== undefined) {
-                        console.error(`[${logPrefix}] model ${modelName} hit 429/quota on attempt ${attempt}, retrying in ${retryDelayMs}ms...`);
-                        await sleep(retryDelayMs);
-                        continue;
-                    }
-                    console.error(`[${logPrefix}] model ${modelName} exhausted 429/quota retries, trying next candidate...`);
+                    sawQuotaError = true;
+                    roundSawQuotaError = true;
+                    console.error(`[${logPrefix}] model ${modelName} hit 429/quota, switching to next candidate immediately...`);
+                    continue;
+                }
+                if (round < REVIEW_MAX_ATTEMPTS - 1) {
+                    console.error(`[${logPrefix}] model ${modelName} failed, retrying same request in ${RETRY_BASE_DELAY_MS}ms...`);
+                    await sleep(RETRY_BASE_DELAY_MS);
                     break;
                 }
-                if (attempt < REVIEW_MAX_ATTEMPTS) {
-                    console.error(`[${logPrefix}] model ${modelName} attempt ${attempt} failed, retrying in ${RETRY_BASE_DELAY_MS}ms...`);
-                    await sleep(RETRY_BASE_DELAY_MS);
-                }
+                throw error;
             }
         }
+        const retryDelayMs = DIRECT_PROMPT_BACKOFF_DELAYS_MS[round];
+        if (roundSawQuotaError && retryDelayMs !== undefined) {
+            console.error(`[${logPrefix}] all candidate models were rate-limited, retrying direct prompt in ${retryDelayMs}ms...`);
+            await sleep(retryDelayMs);
+            continue;
+        }
+        if (roundSawQuotaError) {
+            break;
+        }
     }
-    if (quotaExceeded) {
+    if (sawQuotaError) {
         throw new ApiError('QUOTA_EXCEEDED', 'Gemini API 配額已達上限', 429);
     }
     throw lastError instanceof Error ? lastError : new Error(`${logPrefix} failed.`);

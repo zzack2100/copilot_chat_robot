@@ -43,6 +43,7 @@ type UseMCPResult = {
   reviewing: boolean;
   backendInfo: BackendInfo | null;
   alertMessage: string | null;
+  clearAlertMessage: () => void;
   submitPrompt: (message: string) => Promise<void>;
   connectSse: () => void;
 };
@@ -65,6 +66,8 @@ type BackendInfo = {
 };
 
 type PromptTool = 'review_code' | 'chat_expert' | 'get_current_weather' | 'search_web' | 'get_latest_news';
+
+const ALERT_COOLDOWN_MS = 30_000;
 
 const looksLikeCode = (input: string): boolean => {
   const normalized = input.trim();
@@ -157,6 +160,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const healthUrl = backendOrigin ? `${backendOrigin}/health` : '';
   const transport = options?.transport ?? defaultSseTransport;
   const streamRef = useRef<MCPStream | null>(null);
+  const lastAlertRef = useRef<{ message: string; timestamp: number } | null>(null);
 
   const [statusText, setStatusText] = useState(mode === 'stub' ? 'Stub mode ready' : 'SSE not connected');
   const [reviewing, setReviewing] = useState(false);
@@ -168,6 +172,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     if (mode === 'stub') {
       setStatusText('Stub mode ready');
       setBackendInfo(null);
+      setAlertMessage(null);
       return;
     }
 
@@ -279,6 +284,35 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     });
   }, [mode, sseUrl, transport]);
 
+  const clearAlertMessage = useCallback(() => {
+    if (alertMessage) {
+      lastAlertRef.current = {
+        message: alertMessage,
+        timestamp: Date.now(),
+      };
+    }
+    setAlertMessage(null);
+  }, [alertMessage]);
+
+  const showAlertMessage = useCallback((message: string) => {
+    const now = Date.now();
+    const lastAlert = lastAlertRef.current;
+
+    if (alertMessage === message) {
+      return;
+    }
+
+    if (lastAlert?.message === message && now - lastAlert.timestamp < ALERT_COOLDOWN_MS) {
+      return;
+    }
+
+    lastAlertRef.current = {
+      message,
+      timestamp: now,
+    };
+    setAlertMessage(message);
+  }, [alertMessage]);
+
   const submitPrompt = useCallback(async (message: string) => {
     const trimmed = message.trim();
     if (!trimmed) {
@@ -291,7 +325,6 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     }
 
     setReviewing(true);
-    setAlertMessage(null);
     const promptTool = inferPromptTool(trimmed);
 
     try {
@@ -300,6 +333,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         const stubResult = buildStubResult(trimmed);
         setResult(stubResult);
         setStatusText(stubResult.tool === 'review_code' ? 'Stub review completed' : 'Stub chat completed');
+        setAlertMessage(null);
         return;
       }
 
@@ -337,8 +371,8 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         }
 
         if (errorPayload?.error === 'QUOTA_EXCEEDED') {
-          setAlertMessage('目前的 API 額度已用完，請等待一分鐘後再試。');
-          setStatusText('Gemini quota exceeded');
+          showAlertMessage('⚠️ API 暫時限流，正自動重試或請一分鐘後再試。');
+          setStatusText('Gemini rate limited');
           return;
         }
 
@@ -364,6 +398,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       }
       setAlertMessage(null);
     } catch (error) {
+      setAlertMessage(null);
       setStatusText('Live request failed');
       const message = error instanceof Error ? error.message : 'Unknown error';
       setResult({
@@ -384,9 +419,10 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       reviewing,
       backendInfo,
       alertMessage,
+      clearAlertMessage,
       submitPrompt,
       connectSse,
     }),
-    [alertMessage, backendInfo, connectSse, mode, result, submitPrompt, reviewing, statusText]
+    [alertMessage, backendInfo, clearAlertMessage, connectSse, mode, result, submitPrompt, reviewing, statusText]
   );
 }
