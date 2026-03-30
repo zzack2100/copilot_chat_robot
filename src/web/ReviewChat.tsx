@@ -27,6 +27,7 @@ type ReviewChatProps = {
 };
 
 const CHAT_STORAGE_KEY = 'copilot-chat-history-v1';
+const BACKEND_PANEL_COLLAPSED_KEY = 'copilot-backend-panel-collapsed-v1';
 const QUICK_ACTIONS = [
     { label: '查天氣', prompt: '幫我查汐止現在天氣' },
     { label: '查新聞', prompt: 'latest Taiwan technology news' },
@@ -58,6 +59,8 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         return initialOrigin || savedOrigin;
     });
     const [settingsOpen, setSettingsOpen] = useState(false);
+    // EN: Persist whether the runtime metadata panel is collapsed. ZH: 持久化後端狀態面板的開合偏好。
+    const [backendPanelCollapsed, setBackendPanelCollapsed] = useState<boolean>(() => window.localStorage.getItem(BACKEND_PANEL_COLLAPSED_KEY) === '1');
     const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
     const [historyStatus, setHistoryStatus] = useState<string>(() => getInitialHistoryStatus(window.localStorage.getItem(CHAT_STORAGE_KEY)));
     const [inputCode, setInputCode] = useState('');
@@ -74,6 +77,10 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     useEffect(() => {
         window.localStorage.setItem('copilot-backend-origin', backendOriginInput);
     }, [backendOriginInput]);
+
+    useEffect(() => {
+        window.localStorage.setItem(BACKEND_PANEL_COLLAPSED_KEY, backendPanelCollapsed ? '1' : '0');
+    }, [backendPanelCollapsed]);
 
     useEffect(() => {
         const normalizedInitialOrigin = initialBackendOrigin.trim();
@@ -205,12 +212,14 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                 statusText={statusText}
                 historyStatus={historyStatus}
                 settingsOpen={settingsOpen}
+                backendPanelCollapsed={backendPanelCollapsed}
                 backendOriginInput={backendOriginInput}
                 backendInfo={backendInfo}
                 missingLiveTools={missingLiveTools}
                 showBackendWarning={showBackendWarning}
                 capabilityActionDisabled={reviewing}
                 onModeChange={setMode}
+                onToggleBackendPanel={() => setBackendPanelCollapsed((currentValue) => !currentValue)}
                 onToggleSettings={() => setSettingsOpen((prev) => !prev)}
                 onClearHistory={() => {
                     setMessages([]);

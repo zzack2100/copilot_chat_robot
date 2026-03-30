@@ -255,6 +255,62 @@ body {
   margin-bottom: 0.85rem;
 }
 
+.backend-panel__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.backend-panel__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 86, 106, 0.55);
+  background: rgba(5, 8, 12, 0.34);
+  color: #cbd5e1;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.backend-panel__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(125, 211, 252, 0.32);
+}
+
+.backend-panel__chevron {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 220ms ease;
+}
+
+.backend-panel__chevron--collapsed {
+  transform: rotate(180deg);
+}
+
+.backend-panel__body {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: 0.2rem;
+  opacity: 1;
+  transition: grid-template-rows 260ms ease, opacity 220ms ease, margin-top 220ms ease;
+}
+
+.backend-panel__body--collapsed {
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.backend-panel__body-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .backend-panel__eyebrow {
   margin: 0;
   font-size: 0.68rem;
@@ -396,6 +452,10 @@ body {
   color: #94a3b8;
 }
 
+.backend-warning-panel {
+  overflow: hidden;
+}
+
 .assistant-card {
   border-radius: 18px;
   padding: 0.95rem 1rem;
@@ -483,6 +543,11 @@ body {
 
   .action-rail {
     justify-content: flex-start;
+  }
+
+  .backend-panel__controls {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .backend-panel {

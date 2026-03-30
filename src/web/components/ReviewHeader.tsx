@@ -3,6 +3,7 @@ type ReviewHeaderProps = {
     statusText: string;
     historyStatus: string;
     settingsOpen: boolean;
+    backendPanelCollapsed: boolean;
     backendOriginInput: string;
     backendInfo: {
         reachable: boolean;
@@ -16,6 +17,7 @@ type ReviewHeaderProps = {
     showBackendWarning: boolean;
     capabilityActionDisabled: boolean;
     onModeChange: (mode: 'stub' | 'sse') => void;
+    onToggleBackendPanel: () => void;
     onToggleSettings: () => void;
     onClearHistory: () => void;
     onConnectSse: () => void;
@@ -46,12 +48,14 @@ export default function ReviewHeader({
     statusText,
     historyStatus,
     settingsOpen,
+    backendPanelCollapsed,
     backendOriginInput,
     backendInfo,
     missingLiveTools,
     showBackendWarning,
     capabilityActionDisabled,
     onModeChange,
+    onToggleBackendPanel,
     onToggleSettings,
     onClearHistory,
     onConnectSse,
@@ -149,70 +153,95 @@ export default function ReviewHeader({
                             <p className='backend-panel__eyebrow'>Backend Status</p>
                             <h2 className='backend-panel__title'>Live Runtime Metadata</h2>
                         </div>
-                        <span className={`status-badge status-badge--status ${backendInfo?.reachable ? 'status-badge--success' : 'status-badge--warning'}`}>
-                            <span
-                                aria-hidden='true'
-                                className={`status-light ${backendInfo?.reachable ? 'status-light--success' : 'status-light--warning'}`}
-                            ></span>
-                            <span className='status-badge__stack'>
-                                <span className='status-badge__eyebrow'>Backend</span>
-                                <span className='status-badge__value'>{backendInfo?.reachable ? 'reachable' : 'unknown'}</span>
+                        <div className='backend-panel__controls'>
+                            <span className={`status-badge status-badge--status ${backendInfo?.reachable ? 'status-badge--success' : 'status-badge--warning'}`}>
+                                <span
+                                    aria-hidden='true'
+                                    className={`status-light ${backendInfo?.reachable ? 'status-light--success' : 'status-light--warning'}`}
+                                ></span>
+                                <span className='status-badge__stack'>
+                                    <span className='status-badge__eyebrow'>Backend</span>
+                                    <span className='status-badge__value'>{backendInfo?.reachable ? 'reachable' : 'unknown'}</span>
+                                </span>
                             </span>
-                        </span>
+                            {/* EN: Toggle backend metadata visibility. ZH: 切換後端狀態面板顯示。 */}
+                            <button
+                                type='button'
+                                onClick={onToggleBackendPanel}
+                                className='backend-panel__toggle'
+                                aria-expanded={!backendPanelCollapsed}
+                                aria-label={backendPanelCollapsed ? 'Expand backend metadata' : 'Collapse backend metadata'}
+                                title={backendPanelCollapsed ? '展開後端狀態' : '收合後端狀態'}
+                            >
+                                <svg
+                                    viewBox='0 0 20 20'
+                                    fill='none'
+                                    aria-hidden='true'
+                                    className={`backend-panel__chevron ${backendPanelCollapsed ? 'backend-panel__chevron--collapsed' : ''}`}
+                                >
+                                    <path d='M5 8l5 5 5-5' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round' />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
-                    <div className='backend-meta-grid text-[11px] text-slate-300'>
-                        <article className='backend-meta-card backend-meta-card--primary'>
-                            <p className='backend-meta-card__label'>Build</p>
-                            <p className='backend-meta-card__value backend-meta-card__value--hero backend-meta-card__value--code'>{backendInfo?.build ?? '...'}</p>
-                            <p className='backend-meta-card__hint'>用來辨識你目前是不是連到最新版 backend。</p>
-                        </article>
-                        <article className='backend-meta-card'>
-                            <p className='backend-meta-card__label'>Version</p>
-                            <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.version ?? '...'}</p>
-                            <p className='backend-meta-card__subvalue'>Runtime release identifier</p>
-                        </article>
-                        <article className='backend-meta-card'>
-                            <p className='backend-meta-card__label'>Mode</p>
-                            <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.mode ?? '...'}</p>
-                            <p className='backend-meta-card__subvalue'>Current execution profile</p>
-                        </article>
-                        <article className='backend-meta-card'>
-                            <p className='backend-meta-card__label'>Transport</p>
-                            <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.transport ?? '...'}</p>
-                            <p className='backend-meta-card__subvalue'>Client communication channel</p>
-                        </article>
-                        <article className='backend-meta-card backend-meta-card--wide'>
-                            <p className='backend-meta-card__label'>Capabilities</p>
-                            <div className='capability-chip-list'>
-                                {(backendInfo?.capabilities.length ? backendInfo.capabilities : ['...']).map((capability) => (
-                                    <button
-                                        key={capability}
-                                        type='button'
-                                        className='capability-chip'
-                                        onClick={() => onCapabilitySelect(capability)}
-                                        disabled={capability === '...' || capabilityActionDisabled}
-                                        title={capability === '...' ? 'Capability unavailable' : `點擊直接送出 ${capability} 範例`}
-                                    >
-                                        <span className='capability-chip__icon' aria-hidden='true'>{getCapabilityIcon(capability)}</span>
-                                        <span>{capability}</span>
-                                    </button>
-                                ))}
+                    <div className={`backend-panel__body ${backendPanelCollapsed ? 'backend-panel__body--collapsed' : ''}`} aria-hidden={backendPanelCollapsed}>
+                        <div className='backend-panel__body-inner'>
+                            {/* EN: Keep metadata mounted for smooth transitions. ZH: 保持面板內容掛載以獲得平滑動畫。 */}
+                            <div className='backend-meta-grid text-[11px] text-slate-300'>
+                                <article className='backend-meta-card backend-meta-card--primary'>
+                                    <p className='backend-meta-card__label'>Build</p>
+                                    <p className='backend-meta-card__value backend-meta-card__value--hero backend-meta-card__value--code'>{backendInfo?.build ?? '...'}</p>
+                                    <p className='backend-meta-card__hint'>用來辨識你目前是不是連到最新版 backend。</p>
+                                </article>
+                                <article className='backend-meta-card'>
+                                    <p className='backend-meta-card__label'>Version</p>
+                                    <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.version ?? '...'}</p>
+                                    <p className='backend-meta-card__subvalue'>Runtime release identifier</p>
+                                </article>
+                                <article className='backend-meta-card'>
+                                    <p className='backend-meta-card__label'>Mode</p>
+                                    <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.mode ?? '...'}</p>
+                                    <p className='backend-meta-card__subvalue'>Current execution profile</p>
+                                </article>
+                                <article className='backend-meta-card'>
+                                    <p className='backend-meta-card__label'>Transport</p>
+                                    <p className='backend-meta-card__value backend-meta-card__value--strong'>{backendInfo?.transport ?? '...'}</p>
+                                    <p className='backend-meta-card__subvalue'>Client communication channel</p>
+                                </article>
+                                <article className='backend-meta-card backend-meta-card--wide'>
+                                    <p className='backend-meta-card__label'>Capabilities</p>
+                                    <div className='capability-chip-list'>
+                                        {(backendInfo?.capabilities.length ? backendInfo.capabilities : ['...']).map((capability) => (
+                                            <button
+                                                key={capability}
+                                                type='button'
+                                                className='capability-chip'
+                                                onClick={() => onCapabilitySelect(capability)}
+                                                disabled={capability === '...' || capabilityActionDisabled}
+                                                title={capability === '...' ? 'Capability unavailable' : `點擊直接送出 ${capability} 範例`}
+                                            >
+                                                <span className='capability-chip__icon' aria-hidden='true'>{getCapabilityIcon(capability)}</span>
+                                                <span>{capability}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className='backend-meta-card__subvalue'>Enabled tools exposed by this backend instance. 點一下可直接送出對應範例請求。</p>
+                                </article>
                             </div>
-                            <p className='backend-meta-card__subvalue'>Enabled tools exposed by this backend instance. 點一下可直接送出對應範例請求。</p>
-                        </article>
+                            {showBackendWarning ? (
+                                <div className='backend-warning-panel mt-3 rounded-xl border border-rose-500/60 bg-rose-500/12 px-4 py-3 text-sm text-rose-100 shadow-[0_0_0_1px_rgba(244,63,94,0.15)]'>
+                                    <p className='font-semibold tracking-[0.08em] text-rose-200'>LIVE BACKEND WARNING</p>
+                                    <p className='mt-1'>
+                                        {!backendInfo?.reachable
+                                            ? '前端目前無法連到後端。請確認 Backend URL、localhost port 與 server process 是否真的啟動。'
+                                            : `目前連到的後端缺少工具: ${missingLiveTools.join(', ')}。這通常代表你打到舊版 backend，前端的查天氣、查新聞、網頁搜尋不會正常。`}
+                                    </p>
+                                    <p className='mt-1 text-xs text-rose-200/90'>期望 build: 2026-03-27-tool-routing</p>
+                                </div>
+                            ) : null}
+                        </div>
                     </div>
                 </section>
-            ) : null}
-            {showBackendWarning ? (
-                <div className='mx-auto mt-3 w-full max-w-4xl rounded-xl border border-rose-500/60 bg-rose-500/12 px-4 py-3 text-sm text-rose-100 shadow-[0_0_0_1px_rgba(244,63,94,0.15)]'>
-                    <p className='font-semibold tracking-[0.08em] text-rose-200'>LIVE BACKEND WARNING</p>
-                    <p className='mt-1'>
-                        {!backendInfo?.reachable
-                            ? '前端目前無法連到後端。請確認 Backend URL、localhost port 與 server process 是否真的啟動。'
-                            : `目前連到的後端缺少工具: ${missingLiveTools.join(', ')}。這通常代表你打到舊版 backend，前端的查天氣、查新聞、網頁搜尋不會正常。`}
-                    </p>
-                    <p className='mt-1 text-xs text-rose-200/90'>期望 build: 2026-03-27-tool-routing</p>
-                </div>
             ) : null}
         </header>
     );
