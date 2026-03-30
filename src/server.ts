@@ -21,6 +21,7 @@ if (result.error) {
 type ReviewMode = 'live' | 'stub';
 type TransportMode = 'stdio' | 'sse';
 type PromptMode = 'review_code' | 'chat_expert' | 'get_current_weather' | 'search_web' | 'get_latest_news';
+type ApiErrorCode = 'QUOTA_EXCEEDED';
 
 const SERVER_VERSION = '1.0.0';
 const SERVER_BUILD = '2026-03-27-tool-routing';
@@ -86,7 +87,7 @@ Behavior rules:
 const REVIEW_TIMEOUT_MS = 90_000;
 const REVIEW_MAX_ATTEMPTS = 2;
 const RETRY_BASE_DELAY_MS = 1_200;
-const RETRY_429_DELAY_MS = 5_000;
+const RETRY_429_DELAYS_MS = [1_000, 2_000, 4_000] as const;
 const OPEN_METEO_GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const DUCKDUCKGO_INSTANT_ANSWER_URL = 'https://api.duckduckgo.com/';
@@ -115,6 +116,17 @@ const sleep = async (delayMs: number): Promise<void> => {
     });
 };
 
+class ApiError extends Error {
+    code: ApiErrorCode;
+    status: number;
+
+    constructor(code: ApiErrorCode, message: string, status: number) {
+        super(message);
+        this.code = code;
+        this.status = status;
+    }
+}
+
 const isQuotaOrRateLimitError = (error: unknown): boolean => {
     const message = normalizeErrorMessage(error).toLowerCase();
     return message.includes('429') || message.includes('quota') || message.includes('rate limit');
@@ -123,6 +135,31 @@ const isQuotaOrRateLimitError = (error: unknown): boolean => {
 const isModelNotFoundError = (error: unknown): boolean => {
     const message = normalizeErrorMessage(error).toLowerCase();
     return message.includes('404') || message.includes('not found') || message.includes('is not supported for generatecontent');
+};
+
+const isApiError = (error: unknown): error is ApiError => {
+    return error instanceof ApiError;
+};
+
+const toHttpErrorResponse = (error: unknown, fallbackTool: PromptMode): { status: number; body: Record<string, string> } => {
+    if (isApiError(error)) {
+        return {
+            status: error.status,
+            body: {
+                error: error.code,
+                message: error.message,
+            },
+        };
+    }
+
+    return {
+        status: 400,
+        body: {
+            status: 'error',
+            tool: fallbackTool,
+            message: normalizeErrorMessage(error),
+        },
+    };
 };
 
 const toSafeReviewPayload = (payload: unknown): { code: string } => {
@@ -570,6 +607,7 @@ const runGeminiText = async (prompt: string, systemInstruction: string, logPrefi
     }
 
     let lastError: unknown;
+    let quotaExceeded = false;
 
     for (const modelName of GEMINI_MODELS) {
         const activeModel = genAI.getGenerativeModel({
@@ -577,7 +615,9 @@ const runGeminiText = async (prompt: string, systemInstruction: string, logPrefi
             systemInstruction,
         });
 
-        for (let attempt = 1; attempt <= REVIEW_MAX_ATTEMPTS; attempt += 1) {
+        const maxGeminiAttempts = Math.max(REVIEW_MAX_ATTEMPTS, RETRY_429_DELAYS_MS.length + 1);
+
+        for (let attempt = 1; attempt <= maxGeminiAttempts; attempt += 1) {
             try {
                 const result = await withTimeout(activeModel.generateContent(prompt), REVIEW_TIMEOUT_MS);
                 const response = await result.response;
@@ -597,7 +637,16 @@ const runGeminiText = async (prompt: string, systemInstruction: string, logPrefi
                 }
 
                 if (isQuotaOrRateLimitError(error)) {
-                    console.error(`[${logPrefix}] model ${modelName} quota/rate limit hit, switching to next candidate...`);
+                    quotaExceeded = true;
+
+                    const retryDelayMs = RETRY_429_DELAYS_MS[attempt - 1];
+                    if (retryDelayMs !== undefined) {
+                        console.error(`[${logPrefix}] model ${modelName} hit 429/quota on attempt ${attempt}, retrying in ${retryDelayMs}ms...`);
+                        await sleep(retryDelayMs);
+                        continue;
+                    }
+
+                    console.error(`[${logPrefix}] model ${modelName} exhausted 429/quota retries, trying next candidate...`);
                     break;
                 }
 
@@ -607,6 +656,10 @@ const runGeminiText = async (prompt: string, systemInstruction: string, logPrefi
                 }
             }
         }
+    }
+
+    if (quotaExceeded) {
+        throw new ApiError('QUOTA_EXCEEDED', 'Gemini API 配額已達上限', 429);
     }
 
     throw lastError instanceof Error ? lastError : new Error(`${logPrefix} failed.`);
@@ -947,13 +1000,9 @@ const runSseServer = async (): Promise<void> => {
                 message: review.message,
             });
         } catch (error) {
-            const message = normalizeErrorMessage(error);
-            console.error('[api/review] failed:', message);
-            res.status(400).json({
-                status: 'error',
-                tool: 'review_code',
-                message,
-            });
+            console.error('[api/review] failed:', normalizeErrorMessage(error));
+            const mapped = toHttpErrorResponse(error, 'review_code');
+            res.status(mapped.status).json(mapped.body);
         }
     });
 
@@ -1002,13 +1051,9 @@ const runSseServer = async (): Promise<void> => {
                     message: responsePayload.message,
                 });
             } catch (error) {
-                const message = normalizeErrorMessage(error);
-                console.error('[message] direct prompt failed:', message);
-                res.status(400).json({
-                    status: 'error',
-                    tool: 'chat_expert',
-                    message,
-                });
+                console.error('[message] direct prompt failed:', normalizeErrorMessage(error));
+                const mapped = toHttpErrorResponse(error, 'chat_expert');
+                res.status(mapped.status).json(mapped.body);
             }
             return;
         }

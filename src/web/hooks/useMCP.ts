@@ -42,8 +42,14 @@ type UseMCPResult = {
   result: ReviewResult | null;
   reviewing: boolean;
   backendInfo: BackendInfo | null;
+  alertMessage: string | null;
   submitPrompt: (message: string) => Promise<void>;
   connectSse: () => void;
+};
+
+type ApiErrorResponse = {
+  error?: string;
+  message?: string;
 };
 
 type BackendInfo = {
@@ -156,6 +162,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const [reviewing, setReviewing] = useState(false);
   const [result, setResult] = useState<ReviewResult | null>(null);
   const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (mode === 'stub') {
@@ -284,6 +291,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     }
 
     setReviewing(true);
+    setAlertMessage(null);
     const promptTool = inferPromptTool(trimmed);
 
     try {
@@ -320,8 +328,22 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       });
 
       if (!response.ok) {
-        const responseText = await response.text();
-        throw new Error(responseText || `Backend request failed with status ${response.status}.`);
+        let errorPayload: ApiErrorResponse | null = null;
+
+        try {
+          errorPayload = await response.json() as ApiErrorResponse;
+        } catch {
+          errorPayload = null;
+        }
+
+        if (errorPayload?.error === 'QUOTA_EXCEEDED') {
+          setAlertMessage('目前的 API 額度已用完，請等待一分鐘後再試。');
+          setStatusText('Gemini quota exceeded');
+          return;
+        }
+
+        const fallbackMessage = errorPayload?.message || `Backend request failed with status ${response.status}.`;
+        throw new Error(fallbackMessage);
       }
 
       const payload = (await response.json()) as Partial<ReviewResult>;
@@ -340,6 +362,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       } else {
         setStatusText(payload.status === 'success' ? 'Live response received' : 'Live request failed');
       }
+      setAlertMessage(null);
     } catch (error) {
       setStatusText('Live request failed');
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -360,9 +383,10 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       result,
       reviewing,
       backendInfo,
+      alertMessage,
       submitPrompt,
       connectSse,
     }),
-    [backendInfo, connectSse, mode, result, submitPrompt, reviewing, statusText]
+    [alertMessage, backendInfo, connectSse, mode, result, submitPrompt, reviewing, statusText]
   );
 }
