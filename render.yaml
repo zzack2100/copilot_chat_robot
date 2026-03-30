@@ -24,7 +24,6 @@ services:
   - type: web
     name: copilot-web-frontend
     runtime: static
-    plan: free
     buildCommand: npm ci && npm run web:build
     staticPublishPath: ./dist
     autoDeployTrigger: commit
