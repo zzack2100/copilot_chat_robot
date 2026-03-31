@@ -42,7 +42,7 @@ type UseMCPResult = {
   result: ReviewResult | null;
   reviewing: boolean;
   backendInfo: BackendInfo | null;
-  alertMessage: string | null;
+  alertToast: AlertToast | null;
   clearAlertMessage: () => void;
   submitPrompt: (message: string) => Promise<void>;
   connectSse: () => void;
@@ -67,7 +67,85 @@ type BackendInfo = {
 
 type PromptTool = 'review_code' | 'chat_expert' | 'get_current_weather' | 'search_web' | 'get_latest_news';
 
+export type AlertToast = {
+  kind: 'quota' | 'rate_limit' | 'server_error' | 'network_error' | 'request_error';
+  title: string;
+  kicker: string;
+  message: string;
+  durationMs: number;
+  tone: 'warning' | 'danger';
+  cooldownKey: string;
+};
+
 const ALERT_COOLDOWN_MS = 30_000;
+const QUOTA_ALERT_DURATION_MS = 12_000;
+const RATE_LIMIT_ALERT_DURATION_MS = 10_000;
+const SERVER_ERROR_ALERT_DURATION_MS = 10_000;
+const NETWORK_ERROR_ALERT_DURATION_MS = 10_000;
+const REQUEST_ERROR_ALERT_DURATION_MS = 9_000;
+
+const buildHttpErrorAlert = (status: number, message: string): AlertToast => {
+  if (status === 429) {
+    return {
+      kind: 'rate_limit',
+      title: 'RATE LIMITED',
+      kicker: 'http 429 / retry later',
+      message,
+      durationMs: RATE_LIMIT_ALERT_DURATION_MS,
+      tone: 'warning',
+      cooldownKey: 'http-429',
+    };
+  }
+
+  if (status >= 500) {
+    return {
+      kind: 'server_error',
+      title: 'SERVER ERROR',
+      kicker: `http ${status} / backend failure`,
+      message,
+      durationMs: SERVER_ERROR_ALERT_DURATION_MS,
+      tone: 'danger',
+      cooldownKey: `server-error:${status}`,
+    };
+  }
+
+  return {
+    kind: 'request_error',
+    title: 'REQUEST FAILED',
+    kicker: `http ${status} / request rejected`,
+    message,
+    durationMs: REQUEST_ERROR_ALERT_DURATION_MS,
+    tone: 'danger',
+    cooldownKey: `request-error:${status}:${message}`,
+  };
+};
+
+const buildRuntimeErrorAlert = (error: unknown): AlertToast => {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes('failed to fetch') || normalized.includes('networkerror') || normalized.includes('load failed')) {
+    return {
+      kind: 'network_error',
+      title: 'BACKEND UNREACHABLE',
+      kicker: 'network / cors / server offline',
+      message: '無法連線到後端服務。請確認 Backend URL、CORS 設定與 server process 是否存活。',
+      durationMs: NETWORK_ERROR_ALERT_DURATION_MS,
+      tone: 'danger',
+      cooldownKey: 'network-unreachable',
+    };
+  }
+
+  return {
+    kind: 'request_error',
+    title: 'REQUEST FAILED',
+    kicker: 'unexpected runtime error',
+    message,
+    durationMs: REQUEST_ERROR_ALERT_DURATION_MS,
+    tone: 'danger',
+    cooldownKey: `runtime-error:${message}`,
+  };
+};
 
 const looksLikeCode = (input: string): boolean => {
   const normalized = input.trim();
@@ -160,19 +238,19 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   const healthUrl = backendOrigin ? `${backendOrigin}/health` : '';
   const transport = options?.transport ?? defaultSseTransport;
   const streamRef = useRef<MCPStream | null>(null);
-  const lastAlertRef = useRef<{ message: string; timestamp: number } | null>(null);
+  const lastAlertRef = useRef<{ key: string; timestamp: number } | null>(null);
 
   const [statusText, setStatusText] = useState(mode === 'stub' ? 'Stub mode ready' : 'SSE not connected');
   const [reviewing, setReviewing] = useState(false);
   const [result, setResult] = useState<ReviewResult | null>(null);
   const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
-  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+  const [alertToast, setAlertToast] = useState<AlertToast | null>(null);
 
   useEffect(() => {
     if (mode === 'stub') {
       setStatusText('Stub mode ready');
       setBackendInfo(null);
-      setAlertMessage(null);
+      setAlertToast(null);
       return;
     }
 
@@ -285,33 +363,33 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
   }, [mode, sseUrl, transport]);
 
   const clearAlertMessage = useCallback(() => {
-    if (alertMessage) {
+    if (alertToast) {
       lastAlertRef.current = {
-        message: alertMessage,
+        key: alertToast.cooldownKey,
         timestamp: Date.now(),
       };
     }
-    setAlertMessage(null);
-  }, [alertMessage]);
+    setAlertToast(null);
+  }, [alertToast]);
 
-  const showAlertMessage = useCallback((message: string) => {
+  const showAlertMessage = useCallback((alert: AlertToast) => {
     const now = Date.now();
     const lastAlert = lastAlertRef.current;
 
-    if (alertMessage === message) {
+    if (alertToast?.cooldownKey === alert.cooldownKey) {
       return;
     }
 
-    if (lastAlert?.message === message && now - lastAlert.timestamp < ALERT_COOLDOWN_MS) {
+    if (lastAlert?.key === alert.cooldownKey && now - lastAlert.timestamp < ALERT_COOLDOWN_MS) {
       return;
     }
 
     lastAlertRef.current = {
-      message,
+      key: alert.cooldownKey,
       timestamp: now,
     };
-    setAlertMessage(message);
-  }, [alertMessage]);
+    setAlertToast(alert);
+  }, [alertToast]);
 
   const submitPrompt = useCallback(async (message: string) => {
     const trimmed = message.trim();
@@ -326,6 +404,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
 
     setReviewing(true);
     const promptTool = inferPromptTool(trimmed);
+  let alertHandled = false;
 
     try {
       if (mode === 'stub') {
@@ -333,7 +412,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         const stubResult = buildStubResult(trimmed);
         setResult(stubResult);
         setStatusText(stubResult.tool === 'review_code' ? 'Stub review completed' : 'Stub chat completed');
-        setAlertMessage(null);
+        setAlertToast(null);
         return;
       }
 
@@ -362,6 +441,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       });
 
       if (!response.ok) {
+        const responseStatus = response.status;
         let errorPayload: ApiErrorResponse | null = null;
 
         try {
@@ -371,12 +451,23 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
         }
 
         if (errorPayload?.error === 'QUOTA_EXCEEDED') {
-          showAlertMessage('⚠️ API 暫時限流，正自動重試或請一分鐘後再試。');
+          alertHandled = true;
+          showAlertMessage({
+            kind: 'quota',
+            title: 'API WARNING',
+            kicker: 'Gemini quota / rate limit',
+            message: '⚠️ API 暫時限流，正自動重試或請一分鐘後再試。',
+            durationMs: QUOTA_ALERT_DURATION_MS,
+            tone: 'warning',
+            cooldownKey: 'quota:gemini-rate-limit',
+          });
           setStatusText('Gemini rate limited');
           return;
         }
 
         const fallbackMessage = errorPayload?.message || `Backend request failed with status ${response.status}.`;
+        alertHandled = true;
+        showAlertMessage(buildHttpErrorAlert(responseStatus, fallbackMessage));
         throw new Error(fallbackMessage);
       }
 
@@ -396,11 +487,13 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       } else {
         setStatusText(payload.status === 'success' ? 'Live response received' : 'Live request failed');
       }
-      setAlertMessage(null);
+      setAlertToast(null);
     } catch (error) {
-      setAlertMessage(null);
       setStatusText('Live request failed');
       const message = error instanceof Error ? error.message : 'Unknown error';
+      if (!alertHandled) {
+        showAlertMessage(buildRuntimeErrorAlert(error));
+      }
       setResult({
         status: 'error',
         tool: 'chat_expert',
@@ -409,7 +502,7 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
     } finally {
       setReviewing(false);
     }
-  }, [backendOrigin, mode, reviewUrl]);
+  }, [backendOrigin, mode, reviewUrl, showAlertMessage]);
 
   return useMemo(
     () => ({
@@ -418,11 +511,11 @@ export function useMCP(options?: UseMCPOptions): UseMCPResult {
       result,
       reviewing,
       backendInfo,
-      alertMessage,
+      alertToast,
       clearAlertMessage,
       submitPrompt,
       connectSse,
     }),
-    [alertMessage, backendInfo, clearAlertMessage, connectSse, mode, result, submitPrompt, reviewing, statusText]
+    [alertToast, backendInfo, clearAlertMessage, connectSse, mode, result, submitPrompt, reviewing, statusText]
   );
 }

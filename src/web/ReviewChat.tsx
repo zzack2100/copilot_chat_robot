@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
 import avatarImage from './assets/avatar.jpg';
 import ReviewHeader from './components/ReviewHeader.js';
 import { useMCP } from './hooks/useMCP.js';
+import type { AlertToast } from './hooks/useMCP.js';
 
 type ChatMessage = {
     id: string;
@@ -26,8 +27,11 @@ type ReviewChatProps = {
     initialBackendOrigin?: string;
 };
 
+type LabMode = 'quota' | 'server-error' | 'offline';
+
 const CHAT_STORAGE_KEY = 'copilot-chat-history-v1';
 const BACKEND_PANEL_COLLAPSED_KEY = 'copilot-backend-panel-collapsed-v1';
+const LAB_MODE_STORAGE_KEY = 'copilot-lab-mode-v1';
 const QUICK_ACTIONS = [
     { label: '查天氣', prompt: '幫我查汐止現在天氣' },
     { label: '查新聞', prompt: 'latest Taiwan technology news' },
@@ -35,6 +39,8 @@ const QUICK_ACTIONS = [
 ] as const;
 
 const REQUIRED_LIVE_TOOLS = ['get_current_weather', 'get_latest_news', 'search_web'] as const;
+const LAB_ONLINE_ORIGIN = 'http://127.0.0.1:3015';
+const LAB_OFFLINE_ORIGIN = 'http://127.0.0.1:3999';
 
 const TOOL_MESSAGE_PREFIXES = ['已呼叫工具 get_current_weather', '已呼叫工具 get_latest_news', '已呼叫工具 search_web'];
 const CAPABILITY_PROMPTS: Record<string, string> = {
@@ -59,6 +65,12 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         return initialOrigin || savedOrigin;
     });
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [labMode, setLabMode] = useState<LabMode>(() => {
+        const savedLabMode = window.localStorage.getItem(LAB_MODE_STORAGE_KEY);
+        return savedLabMode === 'server-error' || savedLabMode === 'offline' ? savedLabMode : 'quota';
+    });
+    const [labModeStatus, setLabModeStatus] = useState<string | null>(null);
+    const [applyingLabMode, setApplyingLabMode] = useState(false);
     // EN: Persist whether the runtime metadata panel is collapsed. ZH: 持久化後端狀態面板的開合偏好。
     const [backendPanelCollapsed, setBackendPanelCollapsed] = useState<boolean>(() => window.localStorage.getItem(BACKEND_PANEL_COLLAPSED_KEY) === '1');
     const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessagesFromStorage());
@@ -66,7 +78,10 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     const [inputCode, setInputCode] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const processedResultRef = useRef<string | null>(null);
-    const { result, reviewing, statusText, backendInfo, alertMessage, clearAlertMessage, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+    const { result, reviewing, statusText, backendInfo, alertToast, clearAlertMessage, submitPrompt, connectSse } = useMCP({ mode, backendOrigin: backendOriginInput });
+    const alertToastStyle = {
+        '--alert-dismiss-ms': `${alertToast?.durationMs ?? 12000}ms`,
+    } as CSSProperties;
     const missingLiveTools = REQUIRED_LIVE_TOOLS.filter((tool) => !backendInfo?.capabilities.includes(tool));
     const showBackendWarning = mode === 'sse' && (!backendInfo?.reachable || missingLiveTools.length > 0);
 
@@ -77,6 +92,10 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     useEffect(() => {
         window.localStorage.setItem('copilot-backend-origin', backendOriginInput);
     }, [backendOriginInput]);
+
+    useEffect(() => {
+        window.localStorage.setItem(LAB_MODE_STORAGE_KEY, labMode);
+    }, [labMode]);
 
     useEffect(() => {
         window.localStorage.setItem(BACKEND_PANEL_COLLAPSED_KEY, backendPanelCollapsed ? '1' : '0');
@@ -90,6 +109,18 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
 
         setBackendOriginInput((currentOrigin) => currentOrigin.trim() || normalizedInitialOrigin);
     }, [initialBackendOrigin]);
+
+    useEffect(() => {
+        const normalizedOrigin = backendOriginInput.trim().replace(/\/+$/, '');
+        if (normalizedOrigin === LAB_OFFLINE_ORIGIN) {
+            setLabMode('offline');
+            return;
+        }
+
+        if (normalizedOrigin === LAB_ONLINE_ORIGIN && labMode === 'offline') {
+            setLabMode('quota');
+        }
+    }, [backendOriginInput, labMode]);
 
     useEffect(() => {
         try {
@@ -115,19 +146,19 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
     }, [messages]);
 
     useEffect(() => {
-        if (!alertMessage) {
+        if (!alertToast) {
             return;
         }
 
-        // EN: Auto-hide transient rate-limit warnings after a short delay. ZH: 讓限流警示在短時間後自動收起。
+        // EN: Auto-hide transient alerts based on their variant-specific duration. ZH: 依警示類型套用不同自動收起時間。
         const timeoutId = window.setTimeout(() => {
             clearAlertMessage();
-        }, 12_000);
+        }, alertToast.durationMs);
 
         return () => {
             window.clearTimeout(timeoutId);
         };
-    }, [alertMessage, clearAlertMessage]);
+    }, [alertToast, clearAlertMessage]);
 
     const submitCurrentInput = async (): Promise<void> => {
         const trimmed = inputCode.trim();
@@ -160,6 +191,45 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
         }
 
         await runQuickAction(prompt);
+    };
+
+    const applyLabMode = async (): Promise<void> => {
+        setMode('sse');
+        setApplyingLabMode(true);
+
+        if (labMode === 'offline') {
+            setBackendOriginInput(LAB_OFFLINE_ORIGIN);
+            setLabModeStatus('Offline lab active. Frontend now points to 127.0.0.1:3999 to simulate an unreachable backend.');
+            setApplyingLabMode(false);
+            return;
+        }
+
+        setBackendOriginInput(LAB_ONLINE_ORIGIN);
+        setLabModeStatus(`Applying ${labMode} lab mode on ${LAB_ONLINE_ORIGIN}...`);
+
+        try {
+            const response = await fetch(`${LAB_ONLINE_ORIGIN}/lab/config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ mode: labMode }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Lab config request failed with status ${response.status}`);
+            }
+
+            const payload = await response.json() as { mode?: string };
+            const appliedMode = payload.mode === 'server-error' ? 'server-error' : 'quota';
+            setLabModeStatus(appliedMode === 'quota'
+                ? 'Quota lab active. The local mock backend now returns 429 / QUOTA_EXCEEDED.'
+                : 'Server-error lab active. The local mock backend now returns HTTP 500 responses.');
+        } catch {
+            setLabModeStatus('Lab backend not reachable. Start npm run dev:quota or npm run dev:quota:429 first.');
+        } finally {
+            setApplyingLabMode(false);
+        }
     };
 
     const handleReviewSubmit = async (event: FormEvent) => {
@@ -229,6 +299,9 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                 settingsOpen={settingsOpen}
                 backendPanelCollapsed={backendPanelCollapsed}
                 backendOriginInput={backendOriginInput}
+                labMode={labMode}
+                labModeStatus={labModeStatus}
+                applyingLabMode={applyingLabMode}
                 backendInfo={backendInfo}
                 missingLiveTools={missingLiveTools}
                 showBackendWarning={showBackendWarning}
@@ -244,6 +317,10 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                 onConnectSse={connectSse}
                 onBackendOriginChange={setBackendOriginInput}
                 onResetBackendOrigin={() => setBackendOriginInput(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://127.0.0.1:3000' : '')}
+                onLabModeChange={setLabMode}
+                onApplyLabMode={() => {
+                    void applyLabMode();
+                }}
                 onCapabilitySelect={(capability) => {
                     void runCapabilityAction(capability);
                 }}
@@ -251,23 +328,6 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
 
             <div className='flex-1 overflow-y-auto px-4 py-6 md:px-6'>
                 <div className='mx-auto max-w-2xl space-y-4'>
-                    {alertMessage ? (
-                        <div className='alert-banner rounded-xl border border-amber-400/50 bg-amber-400/12 px-4 py-3 text-sm text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.12)]'>
-                            <div className='alert-banner__header'>
-                                <p className='font-semibold tracking-[0.08em] text-amber-200'>API WARNING</p>
-                                <button
-                                    type='button'
-                                    onClick={clearAlertMessage}
-                                    className='alert-banner__close'
-                                    aria-label='Dismiss API warning'
-                                    title='關閉提醒'
-                                >
-                                    ×
-                                </button>
-                            </div>
-                            <p className='mt-1'>{alertMessage}</p>
-                        </div>
-                    ) : null}
                     <div className='flex flex-wrap gap-2'>
                         {QUICK_ACTIONS.map((item) => (
                             <button
@@ -339,6 +399,35 @@ export default function ReviewChat({ initialMode = 'stub', initialBackendOrigin 
                     <div ref={messagesEndRef} />
                 </div>
             </div>
+
+            {alertToast ? (
+                <aside className='toast-stack pointer-events-none fixed bottom-4 right-4 z-50 w-[min(24rem,calc(100vw-2rem))] sm:bottom-6 sm:right-6'>
+                    <div style={alertToastStyle} className={`alert-toast alert-toast--${alertToast.tone} pointer-events-auto rounded-2xl px-4 py-3 text-sm shadow-[0_18px_45px_rgba(0,0,0,0.42)] backdrop-blur-md`}>
+                        <div className='alert-banner__header'>
+                            <div>
+                                <p className='alert-toast__title'>{alertToast.title}</p>
+                                <div className='alert-toast__kicker-row'>
+                                    <p className='alert-toast__kicker'>{alertToast.kicker}</p>
+                                    <p className='alert-toast__meta'>auto close in {Math.ceil(alertToast.durationMs / 1000)}s</p>
+                                </div>
+                            </div>
+                            <button
+                                type='button'
+                                onClick={clearAlertMessage}
+                                className='alert-banner__close'
+                                aria-label='Dismiss API warning'
+                                title='關閉提醒'
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <p className='alert-toast__message'>{alertToast.message}</p>
+                        <div className='alert-toast__progress-track' aria-hidden='true'>
+                            <div className='alert-toast__progress-bar'></div>
+                        </div>
+                    </div>
+                </aside>
+            ) : null}
 
             <div className='border-t border-edge bg-slate-900/50 px-4 py-4 md:px-6'>
                 <div className='mx-auto max-w-2xl'>

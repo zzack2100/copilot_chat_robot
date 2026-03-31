@@ -5,6 +5,9 @@ type ReviewHeaderProps = {
     settingsOpen: boolean;
     backendPanelCollapsed: boolean;
     backendOriginInput: string;
+    labMode: 'quota' | 'server-error' | 'offline';
+    labModeStatus: string | null;
+    applyingLabMode: boolean;
     backendInfo: {
         reachable: boolean;
         version: string;
@@ -23,6 +26,8 @@ type ReviewHeaderProps = {
     onConnectSse: () => void;
     onBackendOriginChange: (value: string) => void;
     onResetBackendOrigin: () => void;
+    onLabModeChange: (mode: 'quota' | 'server-error' | 'offline') => void;
+    onApplyLabMode: () => void;
     onCapabilitySelect: (capability: string) => void;
 };
 
@@ -50,6 +55,9 @@ export default function ReviewHeader({
     settingsOpen,
     backendPanelCollapsed,
     backendOriginInput,
+    labMode,
+    labModeStatus,
+    applyingLabMode,
     backendInfo,
     missingLiveTools,
     showBackendWarning,
@@ -61,6 +69,8 @@ export default function ReviewHeader({
     onConnectSse,
     onBackendOriginChange,
     onResetBackendOrigin,
+    onLabModeChange,
+    onApplyLabMode,
     onCapabilitySelect,
 }: ReviewHeaderProps) {
     return (
@@ -126,24 +136,54 @@ export default function ReviewHeader({
                 </div>
             </div>
             {settingsOpen ? (
-                <div className='mx-auto mt-3 flex w-full max-w-4xl flex-col gap-3 rounded-xl border border-edge bg-black/30 p-3 md:flex-row md:items-center'>
-                    <label className='flex-1 text-xs text-slate-400'>
-                        Backend URL
-                        <input
-                            type='url'
-                            value={backendOriginInput}
-                            onChange={(event) => onBackendOriginChange(event.target.value)}
-                            placeholder='https://your-backend.up.railway.app'
-                            className='mt-1 w-full rounded-lg border border-edge bg-black/35 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-slate-400'
-                        />
-                    </label>
-                    <button
-                        type='button'
-                        onClick={onResetBackendOrigin}
-                        className='rounded-lg border border-edge bg-black/25 px-3 py-2 text-sm text-slate-300 transition hover:bg-black/40'
-                    >
-                        Reset
-                    </button>
+                <div className='mx-auto mt-3 flex w-full max-w-4xl flex-col gap-3 rounded-xl border border-edge bg-black/30 p-3'>
+                    <div className='flex flex-col gap-3 md:flex-row md:items-end'>
+                        <label className='flex-1 text-xs text-slate-400'>
+                            Backend URL
+                            <input
+                                type='url'
+                                value={backendOriginInput}
+                                onChange={(event) => onBackendOriginChange(event.target.value)}
+                                placeholder='https://your-backend.up.railway.app'
+                                className='mt-1 w-full rounded-lg border border-edge bg-black/35 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-slate-400'
+                            />
+                        </label>
+                        <button
+                            type='button'
+                            onClick={onResetBackendOrigin}
+                            className='rounded-lg border border-edge bg-black/25 px-3 py-2 text-sm text-slate-300 transition hover:bg-black/40'
+                        >
+                            Reset
+                        </button>
+                    </div>
+                    <div className='flex flex-col gap-3 rounded-xl border border-edge/80 bg-slate-950/45 p-3 md:flex-row md:items-end'>
+                        <label className='md:min-w-[14rem] text-xs text-slate-400'>
+                            Lab Mode
+                            <select
+                                value={labMode}
+                                onChange={(event) => onLabModeChange(event.target.value as 'quota' | 'server-error' | 'offline')}
+                                className='mt-1 w-full rounded-lg border border-edge bg-black/35 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-slate-400'
+                            >
+                                <option value='quota'>Quota 429</option>
+                                <option value='server-error'>Backend 500</option>
+                                <option value='offline'>Offline / Unreachable</option>
+                            </select>
+                        </label>
+                        <button
+                            type='button'
+                            onClick={onApplyLabMode}
+                            disabled={applyingLabMode}
+                            className='rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm text-sky-100 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-60'
+                        >
+                            {applyingLabMode ? 'Applying...' : 'Apply Lab Mode'}
+                        </button>
+                        <div className='min-w-0 flex-1 text-xs text-slate-400'>
+                            <p className='font-semibold tracking-[0.08em] text-slate-300'>Dev Lab</p>
+                            <p className='mt-1 break-words text-slate-400/90'>
+                                {labModeStatus ?? 'Use the local lab without restarting scripts. Quota and 500 modes target the mock backend on 127.0.0.1:3015.'}
+                            </p>
+                        </div>
+                    </div>
                 </div>
             ) : null}
             {mode === 'sse' ? (
