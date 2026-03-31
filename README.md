@@ -564,6 +564,9 @@ Render 免費服務在閒置後可能休眠。重新喚醒的第一個請求通�
 
 - Stub mode is useful for UI work and local demos. / Stub mode 適合 UI 開發與本機展示。
 - Live mode without `GEMINI_API_KEY` still allows the non-Gemini utility tools, but Gemini-backed review/chat are unavailable. / 若 live mode 未設定 `GEMINI_API_KEY`，仍可使用非 Gemini 工具，但無法使用 Gemini 驅動的聊天與審查。
+
+- #test website
+- https://copilot-web-frontend.onrender.com/
 - The README reflects the current implementation in this repository, not the earlier broader product description. / 本 README 反映的是目前這個 repository 中的實作，而不是先前更廣泛的產品描述。
 
 ## License / 授權
